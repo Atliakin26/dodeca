@@ -295,6 +295,146 @@ fn rewrite_srcset(srcset: &str, path_map: &HashMap<String, String>) -> String {
         .join(", ")
 }
 
+/// Information about responsive image variants for HTML transformation
+#[derive(Debug, Clone)]
+pub struct ResponsiveImageInfo {
+    /// JXL srcset entries: vec of (path, width)
+    pub jxl_srcset: Vec<(String, u32)>,
+    /// WebP srcset entries: vec of (path, width)
+    pub webp_srcset: Vec<(String, u32)>,
+    /// Original dimensions
+    pub original_width: u32,
+    pub original_height: u32,
+    /// Thumbhash data URL for placeholder
+    pub thumbhash_data_url: String,
+}
+
+/// Build a srcset string from path/width pairs
+fn build_srcset(entries: &[(String, u32)]) -> String {
+    entries
+        .iter()
+        .map(|(path, width)| format!("{path} {width}w"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Transform `<img>` tags pointing to internal images into `<picture>` elements
+///
+/// The `image_variants` map contains:
+/// - Key: original image path (e.g., "/images/photo.png")
+/// - Value: ResponsiveImageInfo with srcsets, dimensions, and thumbhash
+///
+/// Transforms:
+/// ```html
+/// <img src="/images/photo.png" alt="A photo">
+/// ```
+/// Into:
+/// ```html
+/// <picture>
+///   <source srcset="/images/photo-320w.jxl 320w, /images/photo.jxl 1920w" type="image/jxl">
+///   <source srcset="/images/photo-320w.webp 320w, /images/photo.webp 1920w" type="image/webp">
+///   <img src="/images/photo.webp" alt="A photo" width="1920" height="1080"
+///        loading="lazy" decoding="async"
+///        style="background: url(data:image/png;base64,...) center/cover no-repeat">
+/// </picture>
+/// ```
+pub fn transform_images_to_picture(
+    html: &str,
+    image_variants: &HashMap<String, ResponsiveImageInfo>,
+) -> String {
+    use regex::Regex;
+
+    // If no image variants, return unchanged
+    if image_variants.is_empty() {
+        return html.to_string();
+    }
+
+    // Match <img> tags with src attribute (double quotes)
+    // Captures: 1=before src, 2=src value, 3=after src before closing, 4=self-closing or not
+    let img_re_double = Regex::new(r#"<img\s+([^>]*?)src="([^"]+)"([^>]*?)(/?)>"#).unwrap();
+    // Match <img> tags with src attribute (single quotes)
+    let img_re_single = Regex::new(r#"<img\s+([^>]*?)src='([^']+)'([^>]*?)(/?)>"#).unwrap();
+
+    let transform = |caps: &regex::Captures, quote: &str| -> String {
+        let before_src = &caps[1];
+        let src = &caps[2];
+        let after_src = &caps[3];
+        let self_closing = &caps[4];
+
+        // Check if this src has image variants
+        if let Some(info) = image_variants.get(src) {
+            // Build srcset strings
+            let jxl_srcset = build_srcset(&info.jxl_srcset);
+            let webp_srcset = build_srcset(&info.webp_srcset);
+
+            // Get the largest WebP variant for fallback src
+            let fallback_src = info
+                .webp_srcset
+                .iter()
+                .max_by_key(|(_, w)| w)
+                .map(|(p, _)| p.as_str())
+                .unwrap_or("");
+
+            // Extract existing width/height/loading/decoding attributes to avoid duplicates
+            let has_width = before_src.contains("width=") || after_src.contains("width=");
+            let has_height = before_src.contains("height=") || after_src.contains("height=");
+            let has_loading = before_src.contains("loading=") || after_src.contains("loading=");
+            let has_decoding = before_src.contains("decoding=") || after_src.contains("decoding=");
+            let has_style = before_src.contains("style=") || after_src.contains("style=");
+
+            // Build extra attributes
+            let mut extra_attrs = String::new();
+            if !has_width {
+                extra_attrs.push_str(&format!(" width={quote}{}{quote}", info.original_width));
+            }
+            if !has_height {
+                extra_attrs.push_str(&format!(" height={quote}{}{quote}", info.original_height));
+            }
+            if !has_loading {
+                extra_attrs.push_str(&format!(" loading={quote}lazy{quote}"));
+            }
+            if !has_decoding {
+                extra_attrs.push_str(&format!(" decoding={quote}async{quote}"));
+            }
+            if !has_style {
+                // Add thumbhash placeholder as background, cleared on load
+                extra_attrs.push_str(&format!(
+                    " style={quote}background:url({}) 50%/cover no-repeat{quote}",
+                    info.thumbhash_data_url
+                ));
+                extra_attrs.push_str(&format!(
+                    " onload={quote}this.style.background='none'{quote}"
+                ));
+            }
+
+            // Reconstruct the img tag with WebP src and extra attributes
+            let img_tag = format!(
+                "<img {before_src}src={quote}{fallback_src}{quote}{after_src}{extra_attrs}{self_closing}>"
+            );
+
+            // Build the picture element with responsive srcsets
+            format!(
+                "<picture>\
+                    <source srcset={quote}{jxl_srcset}{quote} type={quote}image/jxl{quote}>\
+                    <source srcset={quote}{webp_srcset}{quote} type={quote}image/webp{quote}>\
+                    {img_tag}\
+                </picture>"
+            )
+        } else {
+            // Not a processable image, return unchanged
+            caps[0].to_string()
+        }
+    };
+
+    // First pass: double quotes
+    let result = img_re_double.replace_all(html, |caps: &regex::Captures| transform(caps, "\""));
+
+    // Second pass: single quotes
+    let result = img_re_single.replace_all(&result, |caps: &regex::Captures| transform(caps, "'"));
+
+    result.into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,5 +667,95 @@ mod tests {
         assert!(result.contains("'/images/icon.def.svg'"));
         assert!(result.contains("`/images/hero.ghi.jpg`"));
         assert!(result.contains("\"/not/in/map.png\"")); // unchanged
+    }
+
+    #[test]
+    fn test_transform_images_to_picture() {
+        let html = r#"<img src="/images/photo.png" alt="A photo">"#;
+
+        let mut image_variants = HashMap::new();
+        image_variants.insert(
+            "/images/photo.png".to_string(),
+            ResponsiveImageInfo {
+                jxl_srcset: vec![
+                    ("/images/photo-320w.jxl".to_string(), 320),
+                    ("/images/photo.jxl".to_string(), 800),
+                ],
+                webp_srcset: vec![
+                    ("/images/photo-320w.webp".to_string(), 320),
+                    ("/images/photo.webp".to_string(), 800),
+                ],
+                original_width: 800,
+                original_height: 600,
+                thumbhash_data_url: "data:image/png;base64,ABC123".to_string(),
+            },
+        );
+
+        let result = transform_images_to_picture(html, &image_variants);
+
+        // Should be wrapped in <picture>
+        assert!(result.contains("<picture>"));
+        assert!(result.contains("</picture>"));
+
+        // Should have JXL and WebP sources with srcset
+        assert!(result.contains("type=\"image/jxl\""));
+        assert!(result.contains("type=\"image/webp\""));
+        assert!(result.contains("320w"));
+        assert!(result.contains("800w"));
+
+        // Fallback img should use largest WebP
+        assert!(result.contains(r#"src="/images/photo.webp""#));
+
+        // Should have width and height
+        assert!(result.contains(r#"width="800""#));
+        assert!(result.contains(r#"height="600""#));
+
+        // Should have lazy loading and decoding async
+        assert!(result.contains(r#"loading="lazy""#));
+        assert!(result.contains(r#"decoding="async""#));
+
+        // Should have thumbhash background
+        assert!(result.contains("background:url(data:image/png;base64,ABC123)"));
+
+        // Should preserve alt attribute
+        assert!(result.contains(r#"alt="A photo""#));
+    }
+
+    #[test]
+    fn test_transform_images_to_picture_preserves_existing_dimensions() {
+        let html = r#"<img src="/images/photo.png" width="400" height="300" alt="Resized">"#;
+
+        let mut image_variants = HashMap::new();
+        image_variants.insert(
+            "/images/photo.png".to_string(),
+            ResponsiveImageInfo {
+                jxl_srcset: vec![("/images/photo.jxl".to_string(), 800)],
+                webp_srcset: vec![("/images/photo.webp".to_string(), 800)],
+                original_width: 800,
+                original_height: 600,
+                thumbhash_data_url: "data:image/png;base64,XYZ".to_string(),
+            },
+        );
+
+        let result = transform_images_to_picture(html, &image_variants);
+
+        // Should NOT add width/height (already present)
+        // Should keep existing width/height
+        assert!(result.contains(r#"width="400""#));
+        assert!(result.contains(r#"height="300""#));
+        // Should NOT have the intrinsic dimensions added
+        assert!(!result.contains(r#"width="800""#));
+    }
+
+    #[test]
+    fn test_transform_images_to_picture_non_matching() {
+        let html = r#"<img src="/images/external.png" alt="External">"#;
+
+        let image_variants: HashMap<String, ResponsiveImageInfo> = HashMap::new(); // Empty - no matches
+
+        let result = transform_images_to_picture(html, &image_variants);
+
+        // Should be unchanged
+        assert_eq!(result, html);
     }
 }

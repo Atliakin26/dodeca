@@ -1,10 +1,14 @@
 use crate::db::{
-    CharSet, Db, Heading, OgImageOutput, OgTemplateFile, OutputFile, Page, ParsedData,
-    RenderedHtml, SassFile, SassRegistry, Section, SiteOutput, SiteTree, SourceFile,
-    SourceRegistry, StaticFile, StaticRegistry, TemplateFile, TemplateRegistry,
+    CharSet, Db, Heading, ImageVariant, OgImageOutput, OgTemplateFile, OutputFile, Page,
+    ParsedData, ProcessedImages, RenderedHtml, SassFile, SassRegistry, Section, SiteOutput,
+    SiteTree, SourceFile, SourceRegistry, StaticFile, StaticRegistry, TemplateFile,
+    TemplateRegistry,
 };
+use crate::image::{self, InputFormat, OutputFormat, add_width_suffix};
 use crate::types::{HtmlBody, Route, SassContent, StaticPath, TemplateContent, Title};
-use crate::url_rewrite::{rewrite_urls_in_css, rewrite_urls_in_html};
+use crate::url_rewrite::{
+    rewrite_urls_in_css, rewrite_urls_in_html, transform_images_to_picture, ResponsiveImageInfo,
+};
 use facet::Facet;
 use facet_value::Value;
 use pulldown_cmark::{Options, Parser, html};
@@ -310,6 +314,24 @@ pub fn load_static(db: &dyn Db, file: StaticFile) -> Vec<u8> {
     file.content(db).clone()
 }
 
+/// Optimize an SVG file using oxvg - tracked by Salsa
+/// Returns optimized SVG bytes, or original bytes if optimization fails
+#[salsa::tracked]
+pub fn optimize_svg(db: &dyn Db, file: StaticFile) -> Vec<u8> {
+    let content = file.content(db);
+
+    // Try to parse as UTF-8 string
+    let Ok(svg_str) = std::str::from_utf8(content) else {
+        return content.clone();
+    };
+
+    // Try to optimize with oxvg
+    match crate::svg::optimize_svg(svg_str) {
+        Some(optimized) => optimized.into_bytes(),
+        None => content.clone(),
+    }
+}
+
 /// Load all static files - returns map of path -> content
 #[salsa::tracked]
 pub fn load_all_static<'db>(
@@ -350,6 +372,41 @@ pub fn subset_font<'db>(
             None
         }
     }
+}
+
+/// Process an image file into responsive formats (JXL + WebP) with multiple widths
+/// Returns None if the image cannot be processed or is not a supported format
+#[salsa::tracked]
+pub fn process_image(db: &dyn Db, image_file: StaticFile) -> Option<ProcessedImages> {
+    let path = image_file.path(db);
+    let input_format = InputFormat::from_extension(path.as_str())?;
+    let data = image_file.content(db);
+
+    let processed = image::process_image(data, input_format)?;
+
+    Some(ProcessedImages {
+        original_width: processed.original_width,
+        original_height: processed.original_height,
+        thumbhash_data_url: processed.thumbhash_data_url,
+        jxl_variants: processed
+            .jxl_variants
+            .into_iter()
+            .map(|v| ImageVariant {
+                data: v.data,
+                width: v.width,
+                height: v.height,
+            })
+            .collect(),
+        webp_variants: processed
+            .webp_variants
+            .into_iter()
+            .map(|v| ImageVariant {
+                data: v.data,
+                width: v.width,
+                height: v.height,
+            })
+            .collect(),
+    })
 }
 
 /// Build the complete site - THE top-level query
@@ -393,14 +450,72 @@ pub fn build_site<'db>(
     let all_css = format!("{css_str}\n{inline_css}");
     let font_analysis = font_subsetter::analyze_fonts(&combined_html, &all_css);
 
-    // --- Phase 4: Process static files (with font subsetting) and build path mapping ---
+    // --- Phase 4: Process static files (with font subsetting and image transcoding) ---
     // Maps original path (e.g., "fonts/Inter.woff2") to (new_path, content)
     let mut static_outputs: HashMap<String, (String, Vec<u8>)> = HashMap::new();
+
+    // Track processed images for <img> -> <picture> transformation
+    let mut image_variants: HashMap<String, ResponsiveImageInfo> = HashMap::new();
 
     for file in static_files.files(db) {
         let path = file.path(db).as_str();
 
-        // Get content (possibly subsetted for fonts)
+        // Check if this is a processable image (PNG, JPG, GIF, WebP, JXL)
+        if InputFormat::is_processable(path) {
+            // Try to process the image into JXL and WebP variants at multiple widths
+            if let Some(processed) = process_image(db, *file) {
+                let mut jxl_srcset = Vec::new();
+                let mut webp_srcset = Vec::new();
+
+                // Process each JXL variant
+                for variant in &processed.jxl_variants {
+                    let base_path = image::change_extension(path, OutputFormat::Jxl.extension());
+                    let variant_path = if variant.width == processed.original_width {
+                        base_path // Original size, no suffix
+                    } else {
+                        add_width_suffix(&base_path, variant.width)
+                    };
+                    let hash = content_hash(&variant.data);
+                    let cache_busted = cache_busted_path(&variant_path, &hash);
+
+                    jxl_srcset.push((format!("/{cache_busted}"), variant.width));
+                    static_outputs.insert(variant_path, (cache_busted, variant.data.clone()));
+                }
+
+                // Process each WebP variant
+                for variant in &processed.webp_variants {
+                    let base_path = image::change_extension(path, OutputFormat::WebP.extension());
+                    let variant_path = if variant.width == processed.original_width {
+                        base_path // Original size, no suffix
+                    } else {
+                        add_width_suffix(&base_path, variant.width)
+                    };
+                    let hash = content_hash(&variant.data);
+                    let cache_busted = cache_busted_path(&variant_path, &hash);
+
+                    webp_srcset.push((format!("/{cache_busted}"), variant.width));
+                    static_outputs.insert(variant_path, (cache_busted, variant.data.clone()));
+                }
+
+                // Store the image info for HTML transformation
+                image_variants.insert(
+                    format!("/{path}"),
+                    ResponsiveImageInfo {
+                        jxl_srcset,
+                        webp_srcset,
+                        original_width: processed.original_width,
+                        original_height: processed.original_height,
+                        thumbhash_data_url: processed.thumbhash_data_url.clone(),
+                    },
+                );
+
+                // Don't output the original image (replaced by JXL/WebP)
+                continue;
+            }
+            // If processing failed, fall through to output the original
+        }
+
+        // Get content (possibly subsetted for fonts, or optimized for SVGs)
         let content = if is_font_file(path) {
             if let Some(chars) = find_chars_for_font_file(path, &font_analysis) {
                 if !chars.is_empty() {
@@ -419,6 +534,9 @@ pub fn build_site<'db>(
             } else {
                 load_static(db, *file)
             }
+        } else if path.to_lowercase().ends_with(".svg") {
+            // Optimize SVG files with oxvg
+            optimize_svg(db, *file)
         } else {
             load_static(db, *file)
         };
@@ -453,13 +571,19 @@ pub fn build_site<'db>(
     }
 
     // --- Phase 6: Rewrite HTML ---
+    // First rewrite URLs, then transform <img> to <picture> for responsive images
     let mut files = Vec::new();
 
     for (route, html) in html_outputs {
+        // First pass: rewrite asset URLs (CSS, fonts, etc.)
         let rewritten_html = rewrite_urls_in_html(&html, &all_path_map);
+        // Second pass: transform <img> tags pointing to internal images into <picture> elements
+        let transformed_html = transform_images_to_picture(&rewritten_html, &image_variants);
+        // Third pass: minify HTML
+        let final_html = crate::svg::minify_html(&transformed_html);
         files.push(OutputFile::Html {
             route,
-            content: rewritten_html,
+            content: final_html,
         });
     }
 

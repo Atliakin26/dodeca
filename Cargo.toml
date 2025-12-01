@@ -2,7 +2,7 @@
 name = "dodeca"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["Amos Wenger <amos@bearcove.eu>"]
 license = "MIT OR Apache-2.0"
 description = "A fully incremental static site generator"
@@ -94,6 +94,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 
 # Misc
 camino = "1"  # UTF-8 paths
+base64 = "0.22"  # For encoding thumbhash data URLs
 shellexpand = "3"  # Tilde expansion for font paths
 aliri_braid = "0.4"  # Strongly-typed string wrappers
 regex = "1"  # For HTML heading extraction
@@ -104,7 +105,7 @@ scraper = "0.24"
 
 # URL rewriting (precise, parser-based)
 lol_html = "2.7"        # Streaming HTML rewriter
-lightningcss = { version = "1.0.0-alpha.68", features = ["visitor"] }  # CSS parser/transformer
+lightningcss = { version = "1.0.0-alpha.65", features = ["visitor", "grid"] }  # CSS parser/transformer
 oxc = { version = "0.96", features = ["full"] }  # JS parser/minifier (0.96 for Rust 1.88 compat)
 
 # Font subsetting (actual font manipulation)
@@ -118,6 +119,22 @@ woofwoof = { git = "https://github.com/bearcove/woofwoof" }  # WOFF2 compression
 typst = "0.14"
 typst-svg = "0.14"
 typst-render = "0.14"
+
+# Image processing (responsive images: JXL + WebP)
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+webp = "0.3"
+jxl-oxide = "0.12"
+jpegxl-rs = { version = "0.11", features = ["vendored"] }  # Builds libjxl from source
+rgb = "0.8"
+thumbhash = "0.1"  # Compact image placeholders (~28 bytes)
+
+# HTML minification
+minify-html = "0.15"
+
+# SVG optimization
+oxvg_optimiser = "0.0.3"
+oxvg_ast = "0.0.3"
+typed-arena = "2"  # Arena allocator for oxvg
 
 # Minimal-versions workarounds: these transitive deps have ancient minimum
 # version specs that don't build on modern Rust

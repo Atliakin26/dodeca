@@ -7,8 +7,32 @@ on:
     branches: [main]
 
 jobs:
-  check:
+  check-linux:
     runs-on: depot-ubuntu-24.04-16
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --all-features
+
+  check-macos:
+    runs-on: depot-macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --all-features
+
+  check-windows:
+    runs-on: depot-windows-2022-16
     steps:
       - uses: actions/checkout@v5
 
