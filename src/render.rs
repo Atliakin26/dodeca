@@ -459,7 +459,7 @@ fn section_to_value(section: &Section, site_tree: &SiteTree) -> Value {
     Value::Dict(map)
 }
 
-/// Convert a source path like "learn/_index.md" to a route like "/learn/"
+/// Convert a source path like "learn/_index.md" to a route like "/learn"
 fn path_to_route(path: &str) -> Route {
     let mut p = path.to_string();
 
@@ -475,11 +475,11 @@ fn path_to_route(path: &str) -> Route {
         p = String::new();
     }
 
-    // Ensure leading and trailing slashes
+    // Ensure leading slash, no trailing slash (except for root)
     if p.is_empty() {
         Route::root()
     } else {
-        Route::new(format!("/{p}/"))
+        Route::new(format!("/{p}"))
     }
 }
 

@@ -68,7 +68,8 @@ use aliri_braid::braid;
 pub struct SourcePath;
 
 /// URL route path for a page or section.
-/// Always starts and ends with `/`. Example: "/learn/", "/learn/showcases/json/"
+/// Always starts with `/`, no trailing slash (except for root "/").
+/// Example: "/learn", "/learn/showcases/json"
 #[braid]
 pub struct Route;
 
@@ -127,7 +128,9 @@ impl Route {
 impl RouteRef {
     /// Check if this route is within a section (contains the section name)
     pub fn is_in_section(&self, section: &str) -> bool {
-        self.as_str().contains(&format!("{section}/"))
+        // Match "/section" or "/section/" to handle both with and without trailing slash
+        let s = self.as_str();
+        s.contains(&format!("/{section}/")) || s.ends_with(&format!("/{section}"))
     }
 
     /// Check if this is an ancestor of another route
@@ -135,7 +138,7 @@ impl RouteRef {
         other.as_str().starts_with(self.as_str())
     }
 
-    /// Get the parent route (e.g., "/learn/showcases/" -> "/learn/")
+    /// Get the parent route (e.g., "/learn/showcases" -> "/learn")
     pub fn parent(&self) -> Option<Route> {
         let s = self.as_str().trim_end_matches('/');
         if s.is_empty() || s == "/" {
@@ -143,7 +146,7 @@ impl RouteRef {
         }
         match s.rfind('/') {
             Some(0) => Some(Route::root()),
-            Some(idx) => Some(Route::new(format!("{}/", &s[..idx]))),
+            Some(idx) => Some(Route::new(s[..idx].to_string())),
             None => Some(Route::root()),
         }
     }
@@ -156,8 +159,8 @@ impl SourcePath {
     }
 
     /// Convert source path to URL route.
-    /// - "learn/_index.md" -> "/learn/"
-    /// - "learn/page.md" -> "/learn/page/"
+    /// - "learn/_index.md" -> "/learn"
+    /// - "learn/page.md" -> "/learn/page"
     /// - "_index.md" -> "/"
     pub fn to_route(&self) -> Route {
         let mut path = self.as_str().to_string();
@@ -174,11 +177,11 @@ impl SourcePath {
             path = String::new();
         }
 
-        // Ensure leading and trailing slashes
+        // Ensure leading slash, no trailing slash (except for root)
         if path.is_empty() {
             Route::root()
         } else {
-            Route::new(format!("/{path}/"))
+            Route::new(format!("/{path}"))
         }
     }
 }
@@ -191,11 +194,11 @@ mod tests {
     fn test_source_path_to_route() {
         assert_eq!(
             SourcePath::from_static("learn/_index.md").to_route(),
-            Route::from_static("/learn/")
+            Route::from_static("/learn")
         );
         assert_eq!(
             SourcePath::from_static("learn/showcases/_index.md").to_route(),
-            Route::from_static("/learn/showcases/")
+            Route::from_static("/learn/showcases")
         );
         assert_eq!(
             SourcePath::from_static("_index.md").to_route(),
@@ -203,23 +206,23 @@ mod tests {
         );
         assert_eq!(
             SourcePath::from_static("learn/page.md").to_route(),
-            Route::from_static("/learn/page/")
+            Route::from_static("/learn/page")
         );
     }
 
     #[test]
     fn test_route_parent() {
         assert_eq!(
-            Route::from_static("/learn/showcases/").parent(),
-            Some(Route::from_static("/learn/"))
+            Route::from_static("/learn/showcases").parent(),
+            Some(Route::from_static("/learn"))
         );
-        assert_eq!(Route::from_static("/learn/").parent(), Some(Route::root()));
+        assert_eq!(Route::from_static("/learn").parent(), Some(Route::root()));
         assert_eq!(Route::root().parent(), None);
     }
 
     #[test]
     fn test_route_is_in_section() {
-        let route = Route::from_static("/learn/showcases/json/");
+        let route = Route::from_static("/learn/showcases/json");
         assert!(route.is_in_section("learn"));
         assert!(route.is_in_section("showcases"));
         assert!(!route.is_in_section("extend"));

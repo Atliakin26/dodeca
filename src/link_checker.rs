@@ -276,9 +276,9 @@ fn check_internal_link(
         // Absolute path
         normalize_route(path)
     } else {
-        // Relative path - resolve from source route
+        // Relative path - resolve from source route (add / before relative path)
         let base = source_route.as_str();
-        normalize_route(&format!("{base}{path}"))
+        normalize_route(&format!("{base}/{path}"))
     };
 
     // Check if route exists
@@ -286,13 +286,17 @@ fn check_internal_link(
         return None;
     }
 
-    // Also try without trailing slash (some links omit it)
+    // Also try with trailing slash (some links may have it)
     let without_slash = target_route.trim_end_matches('/');
-    if !without_slash.is_empty() {
-        let with_slash = format!("{without_slash}/");
-        if known_routes.contains(&with_slash) {
+    if !without_slash.is_empty() && without_slash != target_route {
+        if known_routes.contains(without_slash) {
             return None;
         }
+    }
+    // Also try without trailing slash
+    let with_slash = format!("{}/", target_route.trim_end_matches('/'));
+    if known_routes.contains(&with_slash) {
+        return None;
     }
 
     // Check for static files (e.g., /main.css, /favicon.ico)
@@ -313,7 +317,7 @@ fn is_likely_static_file(path: &str) -> bool {
     extensions.iter().any(|ext| path.ends_with(ext))
 }
 
-/// Normalize a route path (handle .. and ., ensure leading/trailing slashes)
+/// Normalize a route path (handle .. and ., ensure leading slash, no trailing slash except root)
 fn normalize_route(path: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
 
@@ -330,7 +334,7 @@ fn normalize_route(path: &str) -> String {
     if parts.is_empty() {
         "/".to_string()
     } else {
-        format!("/{}/", parts.join("/"))
+        format!("/{}", parts.join("/"))
     }
 }
 
@@ -340,22 +344,22 @@ mod tests {
 
     #[test]
     fn test_normalize_route() {
-        assert_eq!(normalize_route("/learn/page/"), "/learn/page/");
-        assert_eq!(normalize_route("/learn/page"), "/learn/page/");
-        assert_eq!(normalize_route("/learn/page/../"), "/learn/");
-        assert_eq!(normalize_route("/learn/./page/"), "/learn/page/");
-        assert_eq!(normalize_route("/learn/../extend/"), "/extend/");
+        assert_eq!(normalize_route("/learn/page/"), "/learn/page");
+        assert_eq!(normalize_route("/learn/page"), "/learn/page");
+        assert_eq!(normalize_route("/learn/page/../"), "/learn");
+        assert_eq!(normalize_route("/learn/./page/"), "/learn/page");
+        assert_eq!(normalize_route("/learn/../extend/"), "/extend");
         assert_eq!(normalize_route("/"), "/");
     }
 
     #[test]
     fn test_check_links_finds_broken() {
         let root = Route::from_static("/");
-        let exists = Route::from_static("/exists/");
+        let exists = Route::from_static("/exists");
         let pages = vec![
             Page {
                 route: &root,
-                html: r#"<a href="/exists/">ok</a> <a href="/missing/">broken</a>"#,
+                html: r#"<a href="/exists">ok</a> <a href="/missing">broken</a>"#,
             },
             Page {
                 route: &exists,
@@ -366,18 +370,18 @@ mod tests {
         let result = check_links(pages.into_iter());
         assert_eq!(result.total_links, 3);
         assert_eq!(result.broken_links.len(), 1);
-        assert_eq!(result.broken_links[0].href, "/missing/");
+        assert_eq!(result.broken_links[0].href, "/missing");
     }
 
     #[test]
     fn test_relative_links() {
-        let learn = Route::from_static("/learn/");
-        let learn_page = Route::from_static("/learn/page/");
-        let extend = Route::from_static("/extend/");
+        let learn = Route::from_static("/learn");
+        let learn_page = Route::from_static("/learn/page");
+        let extend = Route::from_static("/extend");
         let pages = vec![
             Page {
                 route: &learn,
-                html: r#"<a href="page/">relative</a> <a href="../extend/">up</a>"#,
+                html: r#"<a href="page">relative</a> <a href="../extend">up</a>"#,
             },
             Page {
                 route: &learn_page,
