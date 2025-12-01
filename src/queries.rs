@@ -655,6 +655,9 @@ fn render_markdown(markdown: &str) -> (String, Vec<Heading>) {
         }
     }
 
+    // Inject id attributes into headings that don't have them
+    let html_output = inject_heading_ids(&html_output, &headings);
+
     (html_output, headings)
 }
 
@@ -695,6 +698,46 @@ fn extract_html_headings(html: &str) -> Vec<Heading> {
     }
 
     headings
+}
+
+/// Inject id attributes into HTML headings that don't have them
+fn inject_heading_ids(html: &str, headings: &[Heading]) -> String {
+    use regex::Regex;
+
+    let strip_tags = Regex::new(r"<[^>]+>").unwrap();
+    let mut result = html.to_string();
+
+    // Process each heading level separately (h1 through h6)
+    for level in 1..=6 {
+        let pattern = format!(r#"<h{level}(\s[^>]*)?>(.*?)</h{level}>"#);
+        let re = Regex::new(&pattern).unwrap();
+
+        result = re
+            .replace_all(&result, |caps: &regex::Captures| {
+                let attrs = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                let content = &caps[2];
+
+                // Skip if already has an id attribute
+                if attrs.contains("id=") {
+                    return caps[0].to_string();
+                }
+
+                // Strip HTML tags from content to get plain text
+                let plain_text = strip_tags.replace_all(content, "").to_string();
+
+                // Look up the ID from our headings list by matching the plain text
+                let id = headings
+                    .iter()
+                    .find(|h| h.title == plain_text.trim())
+                    .map(|h| h.id.clone())
+                    .unwrap_or_else(|| slugify(plain_text.trim()));
+
+                format!(r#"<h{level} id="{id}"{attrs}>{content}</h{level}>"#)
+            })
+            .to_string();
+    }
+
+    result
 }
 
 /// Render an OG image for a page/section
