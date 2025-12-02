@@ -564,6 +564,10 @@ pub fn build(
     let cas_path = base_dir.join(".dodeca.db");
     let store = cas::ContentStore::open(&cas_path)?;
 
+    // Initialize image cache for processed images
+    let cache_dir = base_dir.join(".cache");
+    cas::init_image_cache(cache_dir.as_std_path())?;
+
     // Create query stats for tracking
     let query_stats = QueryStats::new();
     let mut ctx = BuildContext::with_stats(content_dir, output_dir, Some(Arc::clone(&query_stats)));
@@ -784,6 +788,10 @@ fn build_with_mini_tui(
     let base_dir = content_dir.parent().unwrap_or(content_dir);
     let cas_path = base_dir.join(".dodeca.db");
     let store = cas::ContentStore::open(&cas_path)?;
+
+    // Initialize image cache for processed images
+    let cache_dir = base_dir.join(".cache");
+    cas::init_image_cache(cache_dir.as_std_path())?;
 
     // Create query stats
     let query_stats = QueryStats::new();
@@ -1096,6 +1104,11 @@ async fn serve_plain(
     use std::sync::Arc;
     use tokio::sync::watch;
 
+    // Initialize image cache for processed images
+    let parent_dir = content_dir.parent().unwrap_or(content_dir);
+    let cache_dir = parent_dir.join(".cache");
+    cas::init_image_cache(cache_dir.as_std_path())?;
+
     let render_options = render::RenderOptions {
         livereload: false, // No live reload in plain mode
         dev_mode: true,
@@ -1314,6 +1327,11 @@ async fn serve_with_tui(
     use std::sync::mpsc;
     use tokio::sync::watch;
 
+    // Initialize image cache for processed images
+    let parent_dir = content_dir.parent().unwrap_or(content_dir);
+    let cache_dir = parent_dir.join(".cache");
+    cas::init_image_cache(cache_dir.as_std_path())?;
+
     // Create channels
     let (progress_tx, progress_rx) = tui::progress_channel();
     let (server_tx, server_rx) = tui::server_status_channel();
@@ -1330,6 +1348,12 @@ async fn serve_with_tui(
 
     // Create the site server - serves directly from Salsa, no disk I/O
     let server = Arc::new(serve::SiteServer::new(render_options));
+
+    // Load cached query results (e.g., processed images) from disk
+    let cache_path = content_dir.parent().unwrap_or(content_dir).join(".cache/dodeca.bin");
+    if let Err(e) = server.load_cache(cache_path.as_std_path()) {
+        let _ = event_tx.send(LogEvent::warn(format!("Failed to load cache: {e}")));
+    }
 
     // Determine initial bind mode
     let initial_mode = if address == "0.0.0.0" {
@@ -1824,6 +1848,14 @@ async fn serve_with_tui(
     {
         let shutdown = current_shutdown.lock().unwrap();
         let _ = shutdown.send(true);
+    }
+
+    // Save cache before exit
+    if let Err(e) = std::fs::create_dir_all(cache_path.parent().unwrap()) {
+        tracing::warn!("Failed to create cache dir: {e}");
+    }
+    if let Err(e) = server.save_cache(cache_path.as_std_path()) {
+        tracing::warn!("Failed to save cache: {e}");
     }
 
     Ok(())

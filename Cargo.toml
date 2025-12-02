@@ -79,6 +79,10 @@ cidr = "0.3"
 # Incremental computation
 salsa = { version = "0.24", features = ["persistence"] }
 
+# Serialization (for salsa persistence)
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+
 # Content-addressed storage
 rapidhash = "4"
 canopydb = "0.2.5"
@@ -105,7 +109,7 @@ scraper = "0.24"
 
 # URL rewriting (precise, parser-based)
 lol_html = "2.7"        # Streaming HTML rewriter
-lightningcss = { version = "1.0.0-alpha.65", features = ["visitor", "grid"] }  # CSS parser/transformer
+lightningcss = { version = "1.0.0-alpha.68", features = ["visitor"] }  # CSS parser/transformer
 oxc = { version = "0.96", features = ["full"] }  # JS parser/minifier (0.96 for Rust 1.88 compat)
 
 # Font subsetting (actual font manipulation)
@@ -129,7 +133,7 @@ rgb = "0.8"
 thumbhash = "0.1"  # Compact image placeholders (~28 bytes)
 
 # HTML minification
-minify-html = "0.15"
+minify-html = "0.18"
 
 # Minimal-versions workarounds: these transitive deps have ancient minimum
 # version specs that don't build on modern Rust
@@ -138,6 +142,11 @@ nom = "7"     # 7+ drops lexical-core 0.7 (broken usize/u32 ops)
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["blocking"] }
+
+# Optimize dependencies in dev mode for faster tests
+# (keeps main crate unoptimized for fast incremental builds)
+[profile.dev.package."*"]
+opt-level = 2
 
 # The profile that 'dist' will build with
 [profile.dist]
