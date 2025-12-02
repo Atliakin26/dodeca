@@ -160,8 +160,10 @@ harness = false
 opt-level = 2
 
 # Reduce debug info size (line tables only, no variable info)
+# Light optimization for better runtime without killing incremental builds
 [profile.dev]
 debug = "line-tables-only"
+opt-level = 1
 
 # The profile that 'dist' will build with
 [profile.dist]

@@ -279,12 +279,30 @@ impl SiteServer {
         }
 
         let data = std::fs::read(cache_path)?;
-        let mut db = self.db.lock().unwrap();
 
-        let mut deserializer = postcard::Deserializer::from_bytes(&data);
-        <dyn salsa::Database>::deserialize(&mut *db, &mut deserializer)?;
-        tracing::info!("Loaded cache ({})", format_bytes(data.len()));
-        Ok(())
+        // Try to deserialize - if it fails (e.g., schema changed), delete the corrupt cache
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut db = self.db.lock().unwrap();
+            let mut deserializer = postcard::Deserializer::from_bytes(&data);
+            <dyn salsa::Database>::deserialize(&mut *db, &mut deserializer)
+        }));
+
+        match result {
+            Ok(Ok(())) => {
+                tracing::info!("Loaded cache ({})", format_bytes(data.len()));
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("Cache corrupted, deleting: {e}");
+                let _ = std::fs::remove_file(cache_path);
+                Ok(())
+            }
+            Err(_) => {
+                tracing::warn!("Cache incompatible (schema changed), deleting");
+                let _ = std::fs::remove_file(cache_path);
+                Ok(())
+            }
+        }
     }
 
     /// Save cached query results to disk

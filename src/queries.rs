@@ -401,7 +401,7 @@ pub fn image_input_hash(db: &dyn Db, image_file: StaticFile) -> crate::cas::Inpu
 ///
 /// Uses CAS (Content-Addressable Storage) to cache processed images across restarts.
 /// The cache key is a 32-byte hash of the input image content.
-#[salsa::tracked(persist)]
+#[salsa::tracked]  // No persist - CAS handles caching, don't bloat Salsa DB with image bytes
 #[tracing::instrument(skip_all, name = "process_image")]
 pub fn process_image(db: &dyn Db, image_file: StaticFile) -> Option<ProcessedImages> {
     use crate::cas::{content_hash_32, get_cached_image, put_cached_image};

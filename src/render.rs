@@ -13,25 +13,11 @@ pub struct RenderOptions {
     pub dev_mode: bool,
 }
 
-/// CSS for dead link highlighting in dev mode
+/// CSS for dead link highlighting in dev mode (subtle overline)
 const DEAD_LINK_STYLES: &str = r#"<style>
 a[data-dead] {
-    background: linear-gradient(135deg, #ff6b6b 0%, #ff8e8e 100%) !important;
-    color: #fff !important;
-    padding: 0.1em 0.3em !important;
-    border-radius: 3px !important;
-    text-decoration: line-through wavy !important;
-    animation: dead-link-pulse 1.5s ease-in-out infinite !important;
-    cursor: not-allowed !important;
-}
-@keyframes dead-link-pulse {
-    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.7); }
-    50% { opacity: 0.8; box-shadow: 0 0 0 4px rgba(255, 107, 107, 0); }
-}
-a[data-dead]:hover::after {
-    content: " (dead link: " attr(data-dead) ")";
-    font-size: 0.75em;
-    opacity: 0.9;
+    text-decoration: overline !important;
+    text-decoration-color: rgba(255, 107, 107, 0.6) !important;
 }
 </style>"#;
 

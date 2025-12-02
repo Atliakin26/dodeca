@@ -21,6 +21,19 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use tokio::sync::watch;
 
+/// Format bytes as compact human-readable size
+fn format_size(bytes: usize) -> String {
+    const KB: usize = 1024;
+    const MB: usize = KB * 1024;
+    if bytes >= MB {
+        format!("{:.1}M", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.0}K", bytes as f64 / KB as f64)
+    } else {
+        format!("{}B", bytes)
+    }
+}
+
 /// Progress state for a single task
 #[derive(Debug, Clone)]
 pub struct TaskProgress {
@@ -398,6 +411,10 @@ pub struct ServerStatus {
     pub urls: Vec<String>,
     pub is_running: bool,
     pub bind_mode: BindMode,
+    /// Salsa cache size in bytes (dodeca.bin)
+    pub salsa_cache_size: usize,
+    /// CAS/image cache size in bytes (.cache directory)
+    pub cas_cache_size: usize,
 }
 
 /// Command sent from TUI to server
@@ -615,7 +632,7 @@ impl ServeApp {
         let url_height = server.urls.len().max(1) as u16 + 2;
         let chunks = Layout::vertical([
             Constraint::Length(url_height), // Server URLs
-            Constraint::Length(5),          // Build progress
+            Constraint::Length(3),          // Build progress (single line + borders)
             Constraint::Min(3),             // Events log
             Constraint::Length(1),          // Footer
         ])
@@ -653,32 +670,37 @@ impl ServeApp {
             .block(Block::default().title(server_title).borders(Borders::ALL).border_style(Style::default().fg(theme::FG_GUTTER)));
         frame.render_widget(urls_widget, chunks[0]);
 
-        // Build progress (compact version)
+        // Build progress (single-line compact version)
         let tasks = [
-            (&progress.parse, "📄", "Sources"),
-            (&progress.render, "🎨", "Templates"),
-            (&progress.sass, "💅", "Styles"),
+            (&progress.parse, "📄"),
+            (&progress.render, "🎨"),
+            (&progress.sass, "💅"),
         ];
-        let task_lines: Vec<Line> = tasks
-            .iter()
-            .map(|(task, emoji, done_name)| {
-                let (color, symbol, name) = match task.status {
-                    TaskStatus::Pending => (theme::FG_DARK, "○", task.name),
-                    TaskStatus::Running => (theme::CYAN, "◐", task.name),
-                    TaskStatus::Done => (theme::GREEN, "✓", *done_name),
-                    TaskStatus::Error => (theme::RED, "✗", task.name),
-                };
-                let label = match task.status {
-                    TaskStatus::Done => format!("{emoji} {symbol} {name}"),
-                    _ if task.total > 0 => {
-                        format!("{emoji} {} {} {}/{}", symbol, name, task.completed, task.total)
-                    }
-                    _ => format!("{emoji} {symbol} {name}"),
-                };
-                Line::from(Span::styled(label, Style::default().fg(color)))
-            })
-            .collect();
-        let progress_widget = Paragraph::new(task_lines)
+        let mut status_spans: Vec<Span> = Vec::new();
+        for (i, (task, emoji)) in tasks.iter().enumerate() {
+            if i > 0 {
+                status_spans.push(Span::raw("  ").tn_fg_dark());
+            }
+            let (color, symbol) = match task.status {
+                TaskStatus::Pending => (theme::FG_DARK, "○"),
+                TaskStatus::Running => (theme::CYAN, "◐"),
+                TaskStatus::Done => (theme::GREEN, "✓"),
+                TaskStatus::Error => (theme::RED, "✗"),
+            };
+            status_spans.push(Span::raw(format!("{emoji} ")).tn_fg());
+            status_spans.push(Span::styled(symbol, Style::default().fg(color)));
+        }
+        // Add cache size display
+        if server.salsa_cache_size > 0 || server.cas_cache_size > 0 {
+            status_spans.push(Span::raw("  ").tn_fg_dark());
+            status_spans.push(Span::raw("💾 ").tn_fg());
+            status_spans.push(Span::raw(format!(
+                "{}+{}",
+                format_size(server.salsa_cache_size),
+                format_size(server.cas_cache_size)
+            )).tn_fg_dark());
+        }
+        let progress_widget = Paragraph::new(Line::from(status_spans))
             .block(Block::default().title(" 🔨 Status ").borders(Borders::ALL).border_style(Style::default().fg(theme::FG_GUTTER)));
         frame.render_widget(progress_widget, chunks[1]);
 

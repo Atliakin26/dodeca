@@ -101,6 +101,17 @@ enum Command {
         /// Force TUI mode even without a terminal (for testing)
         #[arg(long, hide = true)]
         force_tui: bool,
+
+        /// Start with public access enabled (listen on all interfaces)
+        #[arg(short = 'P', long)]
+        public: bool,
+    },
+
+    /// Clear all caches (Salsa DB and processed images)
+    Clean {
+        /// Project directory (looks for .config/dodeca.kdl here)
+        #[arg()]
+        path: Option<Utf8PathBuf>,
     },
 }
 
@@ -194,6 +205,7 @@ async fn main() -> Result<()> {
             open,
             no_tui,
             force_tui,
+            public,
         } => {
             let cfg = resolve_dirs(path, content, output)?;
 
@@ -202,16 +214,75 @@ async fn main() -> Result<()> {
             let use_tui = force_tui || (!no_tui && std::io::stdout().is_terminal());
 
             if use_tui {
-                serve_with_tui(&cfg.content_dir, &cfg.output_dir, &address, port, open, cfg.stable_assets).await?;
+                serve_with_tui(&cfg.content_dir, &cfg.output_dir, &address, port, open, cfg.stable_assets, public).await?;
             } else {
                 // Plain mode - no TUI, serve from Salsa
                 logging::init_standard_tracing();
                 serve_plain(&cfg.content_dir, &address, port, open, cfg.stable_assets).await?;
             }
         }
+        Command::Clean { path } => {
+            // Find the project directory
+            let base_dir = if let Some(p) = path {
+                p
+            } else if let Some(cfg) = ResolvedConfig::discover()? {
+                cfg.content_dir.parent().map(|p| p.to_owned()).unwrap_or(cfg.content_dir)
+            } else {
+                Utf8PathBuf::from(".")
+            };
+
+            let cache_dir = base_dir.join(".cache");
+            let cas_db = base_dir.join(".dodeca.db");
+
+            let mut cleared = Vec::new();
+
+            // Remove .cache directory (Salsa DB + image cache)
+            if cache_dir.exists() {
+                let size = dir_size(&cache_dir);
+                fs::remove_dir_all(&cache_dir)?;
+                cleared.push(format!(".cache/ ({})", format_bytes(size)));
+            }
+
+            // Remove CAS database
+            if cas_db.exists() {
+                let size = fs::metadata(&cas_db)?.len() as usize;
+                fs::remove_file(&cas_db)?;
+                cleared.push(format!(".dodeca.db ({})", format_bytes(size)));
+            }
+
+            if cleared.is_empty() {
+                println!("{}", "No caches to clear.".dimmed());
+            } else {
+                println!("{} {}", "Cleared:".green(), cleared.join(", "));
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Calculate total size of a directory recursively
+fn dir_size(path: &Utf8Path) -> usize {
+    WalkBuilder::new(path)
+        .build()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.metadata().ok())
+        .filter(|m| m.is_file())
+        .map(|m| m.len() as usize)
+        .sum()
+}
+
+/// Format bytes as human-readable size
+fn format_bytes(bytes: usize) -> String {
+    const KB: usize = 1024;
+    const MB: usize = KB * 1024;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} bytes", bytes)
+    }
 }
 
 /// Print server URLs with terminal hyperlinks
@@ -1502,6 +1573,7 @@ async fn serve_with_tui(
     port: u16,
     open: bool,
     stable_assets: Vec<String>,
+    start_public: bool,
 ) -> Result<()> {
     use notify::{RecommendedWatcher, RecursiveMode, Watcher};
     use std::sync::Arc;
@@ -1536,8 +1608,8 @@ async fn serve_with_tui(
         let _ = event_tx.send(LogEvent::warn(format!("Failed to load cache: {e}")));
     }
 
-    // Determine initial bind mode
-    let initial_mode = if address == "0.0.0.0" {
+    // Determine initial bind mode (--public flag or explicit 0.0.0.0 address)
+    let initial_mode = if start_public || address == "0.0.0.0" {
         tui::BindMode::Lan
     } else {
         tui::BindMode::Local
@@ -1560,12 +1632,29 @@ async fn serve_with_tui(
         ips.iter().map(|ip| format!("http://{ip}:{port}")).collect()
     }
 
+    // Get cache sizes for status display
+    let base_dir = content_dir.parent().unwrap_or(content_dir);
+    let salsa_cache_path = base_dir.join(".cache/dodeca.bin");
+    let cas_cache_dir = base_dir.join(".cache");
+    fn get_cache_sizes(salsa_path: &Utf8Path, cas_dir: &Utf8Path) -> (usize, usize) {
+        let salsa_size = salsa_path.metadata().map(|m| m.len() as usize).unwrap_or(0);
+        let cas_size = if cas_dir.exists() {
+            dir_size(cas_dir).saturating_sub(salsa_size) // Subtract salsa file since it's inside .cache
+        } else {
+            0
+        };
+        (salsa_size, cas_size)
+    }
+    let (salsa_size, cas_size) = get_cache_sizes(&salsa_cache_path, &cas_cache_dir);
+
     // Set initial server status
     let initial_ips = get_bind_ips(initial_mode);
     let _ = server_tx.send(tui::ServerStatus {
         urls: build_urls(&initial_ips, port),
         is_running: false,
         bind_mode: initial_mode,
+        salsa_cache_size: salsa_size,
+        cas_cache_size: cas_size,
     });
 
     // Load source files into the server
@@ -1775,21 +1864,38 @@ async fn serve_with_tui(
     let server_for_http = server.clone();
     let server_tx_clone = server_tx.clone();
     let event_tx_clone = event_tx.clone();
+    let salsa_cache_path_clone = salsa_cache_path.clone();
+    let cas_cache_dir_clone = cas_cache_dir.clone();
 
     let start_server = |server: Arc<serve::SiteServer>,
                         mode: tui::BindMode,
                         port: u16,
                         shutdown_rx: watch::Receiver<bool>,
                         server_tx: tui::ServerStatusTx,
-                        event_tx: tui::EventTx| {
+                        event_tx: tui::EventTx,
+                        salsa_path: Utf8PathBuf,
+                        cas_dir: Utf8PathBuf| {
         tokio::spawn(async move {
             let ips = get_bind_ips(mode);
+
+            // Get current cache sizes
+            let salsa_size = salsa_path.metadata().map(|m| m.len() as usize).unwrap_or(0);
+            let cas_size = WalkBuilder::new(&cas_dir)
+                .build()
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.metadata().ok())
+                .filter(|m| m.is_file())
+                .map(|m| m.len() as usize)
+                .sum::<usize>()
+                .saturating_sub(salsa_size);
 
             // Update server status
             let _ = server_tx.send(tui::ServerStatus {
                 urls: build_urls(&ips, port),
                 is_running: true,
                 bind_mode: mode,
+                salsa_cache_size: salsa_size,
+                cas_cache_size: cas_size,
             });
 
             // Log the binding
@@ -1819,6 +1925,8 @@ async fn serve_with_tui(
         shutdown_rx.clone(),
         server_tx_clone.clone(),
         event_tx_clone.clone(),
+        salsa_cache_path_clone.clone(),
+        cas_cache_dir_clone.clone(),
     );
 
     // Open browser if requested
@@ -2042,6 +2150,8 @@ async fn serve_with_tui(
     let server_for_cmd = server.clone();
     let server_tx_for_cmd = server_tx.clone();
     let event_tx_for_cmd = event_tx.clone();
+    let salsa_path_for_cmd = salsa_cache_path_clone.clone();
+    let cas_dir_for_cmd = cas_cache_dir_clone.clone();
     // Use Arc<Mutex> for the shutdown sender so we can update it for each rebind
     let current_shutdown = Arc::new(std::sync::Mutex::new(shutdown_tx.clone()));
     let current_shutdown_for_handler = current_shutdown.clone();
@@ -2081,6 +2191,8 @@ async fn serve_with_tui(
                 new_shutdown_rx,
                 server_tx_for_cmd.clone(),
                 event_tx_for_cmd.clone(),
+                salsa_path_for_cmd.clone(),
+                cas_dir_for_cmd.clone(),
             );
         }
     });
@@ -2099,10 +2211,12 @@ async fn serve_with_tui(
 
     // Save cache before exit
     if let Err(e) = std::fs::create_dir_all(cache_path.parent().unwrap()) {
-        tracing::warn!("Failed to create cache dir: {e}");
+        eprintln!("Failed to create cache dir: {e}");
     }
-    if let Err(e) = server.save_cache(cache_path.as_std_path()) {
-        tracing::warn!("Failed to save cache: {e}");
+    let cache_start = std::time::Instant::now();
+    match server.save_cache(cache_path.as_std_path()) {
+        Ok(()) => eprintln!("Cache saved in {:.2?}", cache_start.elapsed()),
+        Err(e) => eprintln!("Failed to save cache: {e}"),
     }
 
     Ok(())
