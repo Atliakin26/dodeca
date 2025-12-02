@@ -4,7 +4,6 @@ mod cache_bust;
 mod cas;
 mod config;
 mod db;
-mod font_subsetter;
 mod image;
 mod link_checker;
 mod logging;
@@ -96,6 +95,10 @@ enum Command {
         /// Disable TUI (show plain output instead)
         #[arg(long)]
         no_tui: bool,
+
+        /// Force TUI mode even without a terminal (for testing)
+        #[arg(long, hide = true)]
+        force_tui: bool,
     },
 }
 
@@ -185,13 +188,14 @@ async fn main() -> Result<()> {
             port,
             open,
             no_tui,
+            force_tui,
         } => {
             let cfg = resolve_dirs(path, content, output)?;
             let (content_dir, output_dir) = (cfg.content_dir, cfg.output_dir);
 
             // Check if we should use TUI
             use std::io::IsTerminal;
-            let use_tui = !no_tui && std::io::stdout().is_terminal();
+            let use_tui = force_tui || (!no_tui && std::io::stdout().is_terminal());
 
             if use_tui {
                 serve_with_tui(&content_dir, &output_dir, &address, port, open).await?;
@@ -1110,7 +1114,7 @@ async fn serve_plain(
     cas::init_image_cache(cache_dir.as_std_path())?;
 
     let render_options = render::RenderOptions {
-        livereload: false, // No live reload in plain mode
+        livereload: true, // Enable live reload in plain mode too
         dev_mode: true,
     };
 
@@ -1227,6 +1231,167 @@ async fn serve_plain(
             }
             Err(e) => {
                 eprintln!("{} Search index error: {}", "error:".red(), e);
+            }
+        }
+    });
+
+    // Set up file watcher for live reload
+    let templates_dir = parent_dir.join("templates");
+    let sass_dir = parent_dir.join("sass");
+
+    use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+    let (watcher_tx, watcher_rx) = std::sync::mpsc::channel();
+    let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res| {
+        let _ = watcher_tx.send(res);
+    })?;
+
+    watcher.watch(content_dir.as_std_path(), RecursiveMode::Recursive)?;
+    if templates_dir.exists() {
+        watcher.watch(templates_dir.as_std_path(), RecursiveMode::Recursive)?;
+    }
+    if sass_dir.exists() {
+        watcher.watch(sass_dir.as_std_path(), RecursiveMode::Recursive)?;
+    }
+    if static_dir.exists() {
+        watcher.watch(static_dir.as_std_path(), RecursiveMode::Recursive)?;
+    }
+
+    // File watcher handler thread
+    // Canonicalize paths for comparison with notify events (which return absolute paths)
+    let content_for_watcher = content_dir
+        .canonicalize_utf8()
+        .unwrap_or_else(|_| content_dir.clone());
+    let templates_dir_for_watcher = templates_dir
+        .canonicalize_utf8()
+        .unwrap_or_else(|_| templates_dir.clone());
+    let sass_dir_for_watcher = sass_dir
+        .canonicalize_utf8()
+        .unwrap_or_else(|_| sass_dir.clone());
+    let static_dir_for_watcher = static_dir
+        .canonicalize_utf8()
+        .unwrap_or_else(|_| static_dir.clone());
+    let server_for_watcher = server.clone();
+
+    std::thread::spawn(move || {
+        use std::time::{Duration, Instant};
+        let debounce = Duration::from_millis(100);
+        let mut last_rebuild = Instant::now() - debounce;
+
+        // Keep watcher alive
+        let _watcher = watcher;
+
+        for event in watcher_rx {
+            let event = match event {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            if last_rebuild.elapsed() < debounce {
+                continue;
+            }
+
+            use notify::EventKind;
+            match event.kind {
+                EventKind::Modify(_) | EventKind::Create(_) => {
+                    let paths: Vec<Utf8PathBuf> = event
+                        .paths
+                        .iter()
+                        .filter(|p| {
+                            let is_known_ext = p.extension()
+                                .map(|e| e == "md" || e == "scss" || e == "html")
+                                .unwrap_or(false);
+                            let is_static = p.starts_with(static_dir_for_watcher.as_std_path());
+                            is_known_ext || is_static
+                        })
+                        .filter_map(|p| Utf8PathBuf::from_path_buf(p.clone()).ok())
+                        .collect();
+
+                    if paths.is_empty() {
+                        continue;
+                    }
+
+                    for path in &paths {
+                        println!("  Changed: {}", path.file_name().unwrap_or("?"));
+                    }
+
+                    // Update files in Salsa
+                    for path in &paths {
+                        if path.starts_with(&content_for_watcher) {
+                            if let Ok(relative) = path.strip_prefix(&content_for_watcher) {
+                                if let Ok(content) = fs::read_to_string(path) {
+                                    let mut db = server_for_watcher.db.lock().unwrap();
+                                    let sources = server_for_watcher.sources.read().unwrap();
+                                    let relative_str = relative.to_string();
+                                    for source in sources.iter() {
+                                        if source.path(&*db).as_str() == relative_str {
+                                            use salsa::Setter;
+                                            source.set_content(&mut *db).to(SourceContent::new(content.clone()));
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } else if path.starts_with(&templates_dir_for_watcher) {
+                            if let Ok(relative) = path.strip_prefix(&templates_dir_for_watcher) {
+                                if let Ok(content) = fs::read_to_string(path) {
+                                    let mut db = server_for_watcher.db.lock().unwrap();
+                                    let templates = server_for_watcher.templates.read().unwrap();
+                                    let relative_str = relative.to_string();
+                                    for template in templates.iter() {
+                                        if template.path(&*db).as_str() == relative_str {
+                                            use salsa::Setter;
+                                            template.set_content(&mut *db).to(TemplateContent::new(content.clone()));
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } else if path.starts_with(&sass_dir_for_watcher) {
+                            if let Ok(relative) = path.strip_prefix(&sass_dir_for_watcher) {
+                                if let Ok(content) = fs::read_to_string(path) {
+                                    let mut db = server_for_watcher.db.lock().unwrap();
+                                    let sass_files = server_for_watcher.sass_files.read().unwrap();
+                                    let relative_str = relative.to_string();
+                                    for sass_file in sass_files.iter() {
+                                        if sass_file.path(&*db).as_str() == relative_str {
+                                            use salsa::Setter;
+                                            sass_file.set_content(&mut *db).to(SassContent::new(content.clone()));
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } else if path.starts_with(&static_dir_for_watcher) {
+                            if let Ok(relative) = path.strip_prefix(&static_dir_for_watcher) {
+                                if let Ok(content) = fs::read(path) {
+                                    let mut db = server_for_watcher.db.lock().unwrap();
+                                    let static_files = server_for_watcher.static_files.read().unwrap();
+                                    let relative_str = relative.to_string();
+                                    tracing::debug!("[no-tui] Looking for static file: {relative_str}");
+                                    let mut found = false;
+                                    for static_file in static_files.iter() {
+                                        let stored_path = static_file.path(&*db).as_str().to_string();
+                                        if stored_path == relative_str {
+                                            tracing::info!("[no-tui] Updating static file: {relative_str} ({} bytes)", content.len());
+                                            use salsa::Setter;
+                                            static_file.set_content(&mut *db).to(content.clone());
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if !found {
+                                        tracing::warn!("[no-tui] Static file not found: {relative_str}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Trigger live reload
+                    server_for_watcher.trigger_reload();
+                    last_rebuild = Instant::now();
+                }
+                _ => {}
             }
         }
     });
@@ -1570,6 +1735,11 @@ async fn serve_with_tui(
         watcher.watch(sass_dir.as_std_path(), RecursiveMode::Recursive)?;
         watched_dirs.push("sass".to_string());
     }
+    let static_dir = parent_dir.join("static");
+    if static_dir.exists() {
+        watcher.watch(static_dir.as_std_path(), RecursiveMode::Recursive)?;
+        watched_dirs.push("static".to_string());
+    }
 
     let _ = event_tx.send(LogEvent::info(format!(
         "Watching: {}",
@@ -1641,9 +1811,19 @@ async fn serve_with_tui(
     }
 
     // Spawn file watcher handler
-    let content_for_watcher = content_dir.clone();
-    let templates_dir_for_watcher = templates_dir.clone();
-    let sass_dir_for_watcher = sass_dir.clone();
+    // Canonicalize paths for comparison with notify events (which return absolute paths)
+    let content_for_watcher = content_dir
+        .canonicalize_utf8()
+        .unwrap_or_else(|_| content_dir.clone());
+    let templates_dir_for_watcher = templates_dir
+        .canonicalize_utf8()
+        .unwrap_or_else(|_| templates_dir.clone());
+    let sass_dir_for_watcher = sass_dir
+        .canonicalize_utf8()
+        .unwrap_or_else(|_| sass_dir.clone());
+    let static_dir_for_watcher = static_dir
+        .canonicalize_utf8()
+        .unwrap_or_else(|_| static_dir.clone());
     let event_tx_for_watcher = event_tx.clone();
     let server_for_watcher = server.clone();
 
@@ -1664,13 +1844,16 @@ async fn serve_with_tui(
                     use notify::EventKind;
                     match event.kind {
                         EventKind::Modify(_) | EventKind::Create(_) => {
+                            // Accept content/template/sass files by extension, or any file in static dir
                             let paths: Vec<Utf8PathBuf> = event
                                 .paths
                                 .iter()
                                 .filter(|p| {
-                                    p.extension()
+                                    let is_known_ext = p.extension()
                                         .map(|e| e == "md" || e == "scss" || e == "html")
-                                        .unwrap_or(false)
+                                        .unwrap_or(false);
+                                    let is_static = p.starts_with(static_dir_for_watcher.as_std_path());
+                                    is_known_ext || is_static
                                 })
                                 .filter_map(|p| Utf8PathBuf::from_path_buf(p.clone()).ok())
                                 .collect();
@@ -1747,6 +1930,39 @@ async fn serve_with_tui(
                                                         .to(SassContent::new(content.clone()));
                                                     break;
                                                 }
+                                            }
+                                        }
+                                    }
+                                } else if path.starts_with(&static_dir_for_watcher) {
+                                    // Static file changed (CSS, fonts, images, etc.)
+                                    if let Ok(relative) = path.strip_prefix(&static_dir_for_watcher) {
+                                        if let Ok(content) = fs::read(path) {
+                                            let mut db = server_for_watcher.db.lock().unwrap();
+                                            let static_files =
+                                                server_for_watcher.static_files.read().unwrap();
+
+                                            // Find existing static file and update it
+                                            let relative_str = relative.to_string();
+                                            tracing::debug!("Looking for static file: {relative_str}");
+                                            let mut found = false;
+                                            for static_file in static_files.iter() {
+                                                let stored_path = static_file.path(&*db).as_str().to_string();
+                                                if stored_path == relative_str {
+                                                    tracing::info!("Updating static file: {relative_str}");
+                                                    use salsa::Setter;
+                                                    static_file
+                                                        .set_content(&mut *db)
+                                                        .to(content.clone());
+                                                    found = true;
+                                                    break;
+                                                }
+                                            }
+                                            if !found {
+                                                let available: Vec<_> = static_files.iter()
+                                                    .map(|f| f.path(&*db).as_str().to_string())
+                                                    .collect();
+                                                tracing::warn!("Static file not found in registry: {relative_str}");
+                                                tracing::debug!("Available static files: {:?}", available);
                                             }
                                         }
                                     }

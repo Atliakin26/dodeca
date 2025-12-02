@@ -35,7 +35,7 @@
     --bg: #0a0a0a;
     --fg: #e5e5e5;
     --muted: #737373;
-    --accent: #3b82f6;
+    --accent: #0000ff;
     --code-bg: #1a1a1a;
     --border: #262626;
     --font-sans: 'Public Sans', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -84,6 +84,7 @@ body {
 .site-nav-search {
     flex: 1;
     max-width: 400px;
+    position: relative;
 }
 
 .site-nav-github {
@@ -115,6 +116,63 @@ body {
 
 .pagefind-ui__search-input::placeholder {
     color: var(--muted) !important;
+}
+
+/* Results container - position as dropdown overlay */
+.pagefind-ui__drawer {
+    position: absolute !important;
+    right: 0 !important;
+    left: auto !important;
+    top: 100% !important;
+    width: 420px !important;
+    max-width: calc(100vw - 2rem) !important;
+    max-height: 80vh !important;
+    overflow-y: auto !important;
+    background: var(--code-bg) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
+    margin-top: 0.5rem !important;
+    z-index: 1000 !important;
+    padding: 0 1rem !important;
+}
+
+.pagefind-ui__message {
+    font-size: 0.8rem !important;
+    padding: 0.5rem !important;
+    color: var(--muted) !important;
+}
+
+.pagefind-ui__result {
+    padding: 0.75rem 0 !important;
+    border-bottom: 1px solid var(--border) !important;
+}
+
+.pagefind-ui__result:last-child {
+    border-bottom: none !important;
+}
+
+.pagefind-ui__result-link {
+    color: var(--accent) !important;
+    text-decoration: none !important;
+}
+
+.pagefind-ui__result-link:hover {
+    text-decoration: underline !important;
+}
+
+.pagefind-ui__result-excerpt {
+    font-size: 0.85rem !important;
+    line-height: 1.4 !important;
+    color: var(--muted) !important;
+    margin-top: 0.25rem !important;
+}
+
+.pagefind-ui__result-excerpt mark {
+    background: var(--accent) !important;
+    color: #fff !important;
+    padding: 0.1em 0.25em !important;
+    border-radius: 2px !important;
 }
 
 /* Main content */
@@ -232,3 +290,5 @@ footer {
         font-size: 2rem;
     }
 }
+/* test 1764639560 */
+/* test2 1764639579 */

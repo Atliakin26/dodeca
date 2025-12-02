@@ -217,7 +217,7 @@ impl SiteServer {
                 }
             } else {
                 // Non-image static file
-                let output = static_file_output(&*db, *file, source_registry, template_registry, sass_registry);
+                let output = static_file_output(&*db, *file, source_registry, template_registry, sass_registry, static_registry);
                 let static_url = format!("/{}", output.cache_busted_path);
                 if path == static_url {
                     let mime = mime_from_extension(path);

@@ -104,20 +104,13 @@ aliri_braid = "0.4"  # Strongly-typed string wrappers
 regex = "1"  # For HTML heading extraction
 url = "2"  # URL parsing for domain extraction
 
-# HTML parsing with style resolution (font subsetting)
-scraper = "0.24"
-
 # URL rewriting (precise, parser-based)
 lol_html = "2.7"        # Streaming HTML rewriter
 lightningcss = { version = "1.0.0-alpha.68", features = ["visitor"] }  # CSS parser/transformer
 oxc = { version = "0.96", features = ["full"] }  # JS parser/minifier (0.96 for Rust 1.88 compat)
 
-# Font subsetting (actual font manipulation)
-fontcull-klippa = "0.1"
-fontcull-skrifa = "0.39"
-fontcull-read-fonts = "0.36"
-fontcull-write-fonts = "0.44"
-woofwoof = { git = "https://github.com/bearcove/woofwoof" }  # WOFF2 compression (pure Rust brotli)
+# Font subsetting (static analysis + klippa backend)
+fontcull = { version = "1.0.4", default-features = false, features = ["klippa", "static-analysis"] }
 
 # OG image generation (Typst → SVG/PNG)
 typst = "0.14"

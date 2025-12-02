@@ -12,6 +12,7 @@ use oxc::ast_visit::Visit;
 /// Rewrite URLs in CSS using lightningcss parser
 ///
 /// Only rewrites actual `url()` values in CSS, not text that happens to look like URLs.
+/// Also minifies the CSS output.
 pub fn rewrite_urls_in_css(css: &str, path_map: &HashMap<String, String>) -> String {
     use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
     use lightningcss::visitor::Visit;
@@ -32,8 +33,12 @@ pub fn rewrite_urls_in_css(css: &str, path_map: &HashMap<String, String>) -> Str
         return css.to_string();
     }
 
-    // Serialize back to string
-    match stylesheet.to_css(PrinterOptions::default()) {
+    // Serialize back to string with minification enabled
+    let printer_options = PrinterOptions {
+        minify: true,
+        ..Default::default()
+    };
+    match stylesheet.to_css(printer_options) {
         Ok(result) => result.code,
         Err(e) => {
             tracing::warn!("Failed to serialize CSS: {:?}", e);

@@ -359,7 +359,7 @@ pub fn subset_font<'db>(
     font_file: StaticFile,
     chars: CharSet<'db>,
 ) -> Option<Vec<u8>> {
-    use crate::font_subsetter::subset_font_to_woff2;
+    use fontcull::subset_font_to_woff2;
     use std::collections::HashSet;
 
     let font_data = font_file.content(db);
@@ -465,7 +465,6 @@ pub fn build_site<'db>(
     static_files: StaticRegistry<'db>,
 ) -> SiteOutput {
     use crate::cache_bust::{cache_busted_path, content_hash};
-    use crate::font_subsetter;
 
     // Build the site tree (tracked via Salsa)
     let site_tree = build_tree(db, sources);
@@ -490,9 +489,9 @@ pub fn build_site<'db>(
     // --- Phase 3: Analyze fonts for subsetting ---
     let html_refs: Vec<&str> = html_outputs.iter().map(|(_, h)| h.as_str()).collect();
     let combined_html = html_refs.join("\n");
-    let inline_css = font_subsetter::extract_css_from_html(&combined_html);
+    let inline_css = fontcull::extract_css_from_html(&combined_html);
     let all_css = format!("{css_str}\n{inline_css}");
-    let font_analysis = font_subsetter::analyze_fonts(&combined_html, &all_css);
+    let font_analysis = fontcull::analyze_fonts(&combined_html, &all_css);
 
     // --- Phase 4: Process static files (with font subsetting and image transcoding) ---
     // Maps original path (e.g., "fonts/Inter.woff2") to (new_path, content)
@@ -736,8 +735,7 @@ pub fn font_char_analysis<'db>(
     sources: SourceRegistry<'db>,
     templates: TemplateRegistry<'db>,
     sass: SassRegistry<'db>,
-) -> crate::font_subsetter::FontAnalysis {
-    use crate::font_subsetter;
+) -> fontcull::FontAnalysis {
 
     let all_html = all_rendered_html(db, sources, templates);
     let css_content = compile_sass(db, sass);
@@ -745,14 +743,15 @@ pub fn font_char_analysis<'db>(
 
     // Combine all HTML for analysis
     let combined_html: String = all_html.pages.values().cloned().collect::<Vec<_>>().join("\n");
-    let inline_css = font_subsetter::extract_css_from_html(&combined_html);
+    let inline_css = fontcull::extract_css_from_html(&combined_html);
     let all_css = format!("{css_str}\n{inline_css}");
 
-    font_subsetter::analyze_fonts(&combined_html, &all_css)
+    fontcull::analyze_fonts(&combined_html, &all_css)
 }
 
 /// Process a single static file and return its cache-busted output
 /// For fonts, this triggers global font analysis for subsetting
+/// For CSS files, URLs are rewritten to cache-busted versions
 #[salsa::tracked]
 pub fn static_file_output<'db>(
     db: &'db dyn Db,
@@ -760,10 +759,13 @@ pub fn static_file_output<'db>(
     sources: SourceRegistry<'db>,
     templates: TemplateRegistry<'db>,
     sass: SassRegistry<'db>,
+    static_files: StaticRegistry<'db>,
 ) -> StaticFileOutput {
     use crate::cache_bust::{cache_busted_path, content_hash};
 
     let path = file.path(db).as_str();
+    let content_len = file.content(db).len();
+    tracing::debug!("static_file_output called for {path} ({content_len} bytes)");
 
     // Get processed content based on file type
     let content = if is_font_file(path) {
@@ -789,6 +791,32 @@ pub fn static_file_output<'db>(
     } else if path.to_lowercase().ends_with(".svg") {
         // SVG - process
         optimize_svg(db, file)
+    } else if path.to_lowercase().ends_with(".css") {
+        // CSS file - rewrite URLs to cache-busted versions
+        let raw_content = load_static(db, file);
+        let css_str = String::from_utf8_lossy(&raw_content);
+
+        // Build path map for non-CSS, non-image static files
+        let mut path_map: HashMap<String, String> = HashMap::new();
+        for other_file in static_files.files(db) {
+            let other_path = other_file.path(db).as_str();
+            // Skip CSS files (would cause recursion) and images (different handling)
+            if !other_path.to_lowercase().ends_with(".css")
+                && !InputFormat::is_processable(other_path)
+            {
+                // Recursively get the output for this file (safe - no CSS files)
+                let other_output =
+                    static_file_output(db, *other_file, sources, templates, sass, static_files);
+                path_map.insert(
+                    format!("/{other_path}"),
+                    format!("/{}", other_output.cache_busted_path),
+                );
+            }
+        }
+
+        // Rewrite URLs in CSS
+        let rewritten = rewrite_urls_in_css(&css_str, &path_map);
+        rewritten.into_bytes()
     } else {
         // Other static files - just load
         load_static(db, file)
@@ -824,7 +852,7 @@ pub fn css_output<'db>(
         let original_path = file.path(db).as_str();
         // Skip images - they get transcoded to different formats
         if !InputFormat::is_processable(original_path) {
-            let output = static_file_output(db, *file, sources, templates, sass);
+            let output = static_file_output(db, *file, sources, templates, sass, static_files);
             static_path_map.insert(
                 format!("/{original_path}"),
                 format!("/{}", output.cache_busted_path),
@@ -883,7 +911,7 @@ pub fn serve_html<'db>(
     for file in static_files.files(db) {
         let original_path = file.path(db).as_str();
         if !InputFormat::is_processable(original_path) {
-            let output = static_file_output(db, *file, sources, templates, sass);
+            let output = static_file_output(db, *file, sources, templates, sass, static_files);
             path_map.insert(
                 format!("/{original_path}"),
                 format!("/{}", output.cache_busted_path),
@@ -991,7 +1019,7 @@ fn is_font_file(path: &str) -> bool {
 /// Find the character set needed for a font file based on @font-face analysis
 fn find_chars_for_font_file(
     path: &str,
-    analysis: &crate::font_subsetter::FontAnalysis,
+    analysis: &fontcull::FontAnalysis,
 ) -> Option<std::collections::HashSet<char>> {
     // Normalize path for comparison (remove leading slash if present)
     let normalized = path.trim_start_matches('/');
