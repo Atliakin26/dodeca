@@ -1,0 +1,27 @@
+[package]
+name = "livereload-client"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+description = "WASM client for dodeca live reload - applies DOM patches"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
+    "console",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "Node",
+    "NodeList",
+    "Text",
+    "Window",
+] }
+serde = { version = "1", features = ["derive"] }
+postcard = "1"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

@@ -5,7 +5,7 @@
 //! 2. Hash subtrees to quickly identify unchanged regions
 //! 3. For changed subtrees, use tree-edit-distance algorithm
 //! 4. Generate minimal patch operations
-//! 5. Serialize patches with bincode for WASM client
+//! 5. Serialize patches with postcard for WASM client
 //!
 //! The client (Rust/WASM) applies patches directly to the DOM.
 
@@ -72,6 +72,16 @@ pub struct DiffResult {
     /// Stats for debugging
     pub nodes_compared: usize,
     pub nodes_skipped: usize,
+}
+
+/// Serialize patches to bytes for sending over WebSocket
+pub fn serialize_patches(patches: &[Patch]) -> Result<Vec<u8>, postcard::Error> {
+    postcard::to_allocvec(patches)
+}
+
+/// Deserialize patches from bytes (for WASM client)
+pub fn deserialize_patches(data: &[u8]) -> Result<Vec<Patch>, postcard::Error> {
+    postcard::from_bytes(data)
 }
 
 impl DomNode {
@@ -491,6 +501,31 @@ mod tests {
         let result = diff(&old, &new);
         assert_eq!(result.patches.len(), 1);
         assert!(matches!(&result.patches[0], Patch::Replace { .. }));
+    }
+
+    #[test]
+    fn test_patch_serialization_roundtrip() {
+        let patches = vec![
+            Patch::SetText {
+                path: NodePath(vec![0, 1, 2]),
+                text: "hello world".to_string(),
+            },
+            Patch::SetAttribute {
+                path: NodePath(vec![0]),
+                name: "class".to_string(),
+                value: "active".to_string(),
+            },
+            Patch::Remove {
+                path: NodePath(vec![1, 0]),
+            },
+        ];
+
+        let serialized = serialize_patches(&patches).unwrap();
+        let deserialized = deserialize_patches(&serialized).unwrap();
+
+        assert_eq!(patches, deserialized);
+        // postcard is compact - these 3 patches should be < 100 bytes
+        assert!(serialized.len() < 100, "Serialized size: {}", serialized.len());
     }
 
     /// Generate a realistic large page for benchmarking
