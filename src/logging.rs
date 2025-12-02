@@ -177,39 +177,22 @@ fn detect_event_kind(msg: &str, target: &str) -> EventKind {
         return EventKind::Build;
     }
 
-    // Match on emoji prefixes first (more reliable)
-    if msg.starts_with("✨") {
-        return EventKind::Patch;
-    }
-    if msg.starts_with("🔄") {
-        return EventKind::Reload;
-    }
-    if msg.starts_with("🔍") {
-        return EventKind::Search;
-    }
-    if msg.starts_with("🔌") {
-        return EventKind::Server;
-    }
-    if msg.starts_with("📄") || msg.starts_with("🎨") || msg.starts_with("💅")
-        || msg.starts_with("🖼") || msg.starts_with("📁") || msg.starts_with("🔤")
-        || msg.starts_with("📜") {
-        return EventKind::FileChange;
-    }
-
-    // Match on message content patterns (fallback)
+    // Match on message content patterns
     let msg_lower = msg.to_lowercase();
 
-    if msg_lower.contains("reload") {
+    if msg_lower.contains("reload") && !msg_lower.contains("live reload") {
         EventKind::Reload
     } else if msg_lower.contains("patch") {
         EventKind::Patch
     } else if msg_lower.contains("search") || msg_lower.contains("pagefind") {
         EventKind::Search
-    } else if msg_lower.contains("changed:") || msg_lower.contains("modified") {
+    } else if msg_lower.contains("changed:") || msg_lower.contains("modified") || msg_lower.contains("watching") {
         EventKind::FileChange
-    } else if msg_lower.contains("server") || msg_lower.contains("listening") || msg_lower.contains("binding") || msg_lower.contains("browser") {
+    } else if msg_lower.contains("server") || msg_lower.contains("listening") || msg_lower.contains("binding")
+        || msg_lower.contains("browser") || msg_lower.contains("connected") || msg_lower.contains("disconnected") {
         EventKind::Server
-    } else if msg_lower.contains("compil") || msg_lower.contains("build") || msg_lower.contains("render") || msg_lower.contains("slow query") {
+    } else if msg_lower.contains("compil") || msg_lower.contains("build") || msg_lower.contains("render")
+        || msg_lower.contains("slow query") || msg_lower.contains("loaded") || msg_lower.contains("cache") {
         EventKind::Build
     } else {
         EventKind::Generic

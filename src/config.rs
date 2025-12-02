@@ -28,6 +28,11 @@ pub struct DodecaConfig {
     /// Link checking configuration
     #[facet(kdl::child, default)]
     pub link_check: LinkCheckConfig,
+
+    /// Assets that should be served at their original paths (no cache-busting)
+    /// e.g., favicon.svg, robots.txt, og-image.png
+    #[facet(kdl::child, default)]
+    pub stable_assets: StableAssetsConfig,
 }
 
 /// Link checking configuration
@@ -36,6 +41,21 @@ pub struct LinkCheckConfig {
     /// Domains to skip checking (anti-bot policies, known flaky, etc.)
     #[facet(kdl::children, default)]
     pub skip_domains: Vec<SkipDomain>,
+}
+
+/// Stable assets configuration (served at original paths without cache-busting)
+#[derive(Debug, Clone, Default, Facet)]
+pub struct StableAssetsConfig {
+    /// Asset paths relative to static/ directory
+    #[facet(kdl::children, default)]
+    pub paths: Vec<StableAssetPath>,
+}
+
+/// A single stable asset path
+#[derive(Debug, Clone, Facet)]
+pub struct StableAssetPath {
+    #[facet(kdl::argument)]
+    pub path: String,
 }
 
 /// A domain to skip during external link checking
@@ -70,6 +90,8 @@ pub struct ResolvedConfig {
     pub output_dir: Utf8PathBuf,
     /// Domains to skip during external link checking
     pub skip_domains: Vec<String>,
+    /// Asset paths that should be served at original paths (no cache-busting)
+    pub stable_assets: Vec<String>,
 }
 
 impl ResolvedConfig {
@@ -154,11 +176,20 @@ fn load_config(config_path: &Utf8Path) -> Result<ResolvedConfig> {
         .map(|s| s.domain)
         .collect();
 
+    // Extract stable asset paths
+    let stable_assets = config
+        .stable_assets
+        .paths
+        .into_iter()
+        .map(|p| p.path)
+        .collect();
+
     Ok(ResolvedConfig {
         _root: root,
         content_dir,
         output_dir,
         skip_domains,
+        stable_assets,
     })
 }
 

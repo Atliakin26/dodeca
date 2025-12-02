@@ -31,6 +31,23 @@ use crate::render::{RenderOptions, inject_livereload};
 use crate::types::Route;
 use crate::image::{InputFormat, OutputFormat, add_width_suffix};
 
+/// Format bytes as human-readable size (KB, MB, GB)
+fn format_bytes(bytes: usize) -> String {
+    const KB: usize = 1024;
+    const MB: usize = KB * 1024;
+    const GB: usize = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} bytes", bytes)
+    }
+}
+
 /// Message types for livereload WebSocket
 #[derive(Clone, Debug)]
 pub enum LiveReloadMsg {
@@ -112,10 +129,12 @@ pub struct SiteServer {
     pub render_options: RenderOptions,
     /// Cached HTML for each route (for computing patches)
     html_cache: RwLock<HashMap<String, String>>,
+    /// Asset paths that should be served at original paths (no cache-busting)
+    stable_assets: Vec<String>,
 }
 
 impl SiteServer {
-    pub fn new(render_options: RenderOptions) -> Self {
+    pub fn new(render_options: RenderOptions, stable_assets: Vec<String>) -> Self {
         let (livereload_tx, _) = broadcast::channel(16);
         Self {
             db: Mutex::new(Database::new()),
@@ -127,7 +146,13 @@ impl SiteServer {
             livereload_tx,
             render_options,
             html_cache: RwLock::new(HashMap::new()),
+            stable_assets,
         }
+    }
+
+    /// Check if a path is configured as a stable asset
+    fn is_stable_asset(&self, path: &str) -> bool {
+        self.stable_assets.iter().any(|p| p == path)
     }
 
     /// Notify all connected browsers to reload
@@ -248,7 +273,7 @@ impl SiteServer {
     /// Load cached query results from disk
     pub fn load_cache(&self, cache_path: &std::path::Path) -> Result<()> {
         if !cache_path.exists() {
-            tracing::info!("No cache file found at {:?}", cache_path);
+            tracing::info!("No cache file found, starting fresh");
             return Ok(());
         }
 
@@ -257,7 +282,7 @@ impl SiteServer {
 
         let mut deserializer = postcard::Deserializer::from_bytes(&data);
         <dyn salsa::Database>::deserialize(&mut *db, &mut deserializer)?;
-        tracing::info!("Loaded cache from {:?}", cache_path);
+        tracing::info!("Loaded cache ({})", format_bytes(data.len()));
         Ok(())
     }
 
@@ -271,7 +296,7 @@ impl SiteServer {
         std::fs::write(&temp_path, &data)?;
         std::fs::rename(&temp_path, cache_path)?;
 
-        tracing::info!("Saved cache to {:?} ({} bytes)", cache_path, data.len());
+        tracing::info!("Saved cache ({})", format_bytes(data.len()));
         Ok(())
     }
 
@@ -389,6 +414,15 @@ impl SiteServer {
                     let mime = mime_from_extension(path);
                     return Some(ServeContent::Static(output.content, mime));
                 }
+
+                // Also serve stable assets at their original paths (no cache-busting)
+                if self.is_stable_asset(original_path) {
+                    let original_url = format!("/{}", original_path);
+                    if path == original_url {
+                        let mime = mime_from_extension(path);
+                        return Some(ServeContent::StaticNoCache(output.content, mime));
+                    }
+                }
             }
         }
 
@@ -401,6 +435,8 @@ enum ServeContent {
     Html(String),
     Css(String),
     Static(Vec<u8>, &'static str),
+    /// Static file served at original path (no caching, for favicon etc.)
+    StaticNoCache(Vec<u8>, &'static str),
 }
 
 /// Cache-Control header for cache-busted assets (1 year, immutable)
@@ -449,6 +485,12 @@ async fn content_handler(State(server): State<Arc<SiteServer>>, request: Request
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime)
                 .header(header::CACHE_CONTROL, CACHE_IMMUTABLE)
+                .body(Body::from(bytes))
+                .unwrap(),
+            ServeContent::StaticNoCache(bytes, mime) => Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, mime)
+                .header(header::CACHE_CONTROL, CACHE_NO_CACHE)
                 .body(Body::from(bytes))
                 .unwrap(),
         };

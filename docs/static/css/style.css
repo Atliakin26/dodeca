@@ -75,10 +75,17 @@ body {
 }
 
 .site-nav-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     font-size: 1.5rem;
     font-weight: 700;
     color: var(--fg);
     text-decoration: none;
+}
+
+.site-nav-logo {
+    flex-shrink: 0;
 }
 
 .site-nav-search {

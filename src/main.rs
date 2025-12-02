@@ -109,6 +109,7 @@ struct ResolvedBuildConfig {
     content_dir: Utf8PathBuf,
     output_dir: Utf8PathBuf,
     skip_domains: Vec<String>,
+    stable_assets: Vec<String>,
 }
 
 /// Resolve content and output directories from CLI args or config file
@@ -123,6 +124,7 @@ fn resolve_dirs(
             content_dir: c.clone(),
             output_dir: o.clone(),
             skip_domains: vec![],
+            stable_assets: vec![],
         });
     }
 
@@ -141,6 +143,7 @@ fn resolve_dirs(
                 content_dir,
                 output_dir,
                 skip_domains: cfg.skip_domains,
+                stable_assets: cfg.stable_assets,
             })
         }
         None => {
@@ -193,18 +196,17 @@ async fn main() -> Result<()> {
             force_tui,
         } => {
             let cfg = resolve_dirs(path, content, output)?;
-            let (content_dir, output_dir) = (cfg.content_dir, cfg.output_dir);
 
             // Check if we should use TUI
             use std::io::IsTerminal;
             let use_tui = force_tui || (!no_tui && std::io::stdout().is_terminal());
 
             if use_tui {
-                serve_with_tui(&content_dir, &output_dir, &address, port, open).await?;
+                serve_with_tui(&cfg.content_dir, &cfg.output_dir, &address, port, open, cfg.stable_assets).await?;
             } else {
                 // Plain mode - no TUI, serve from Salsa
                 logging::init_standard_tracing();
-                serve_plain(&content_dir, &address, port, open).await?;
+                serve_plain(&cfg.content_dir, &address, port, open, cfg.stable_assets).await?;
             }
         }
     }
@@ -1106,6 +1108,7 @@ async fn serve_plain(
     address: &str,
     port: u16,
     open: bool,
+    stable_assets: Vec<String>,
 ) -> Result<()> {
     use std::sync::Arc;
     use tokio::sync::watch;
@@ -1121,7 +1124,7 @@ async fn serve_plain(
     };
 
     // Create the site server
-    let server = Arc::new(serve::SiteServer::new(render_options));
+    let server = Arc::new(serve::SiteServer::new(render_options, stable_assets));
 
     // Load source files
     println!("{}", "Loading source files...".dimmed());
@@ -1498,6 +1501,7 @@ async fn serve_with_tui(
     address: &str,
     port: u16,
     open: bool,
+    stable_assets: Vec<String>,
 ) -> Result<()> {
     use notify::{RecommendedWatcher, RecursiveMode, Watcher};
     use std::sync::Arc;
@@ -1524,7 +1528,7 @@ async fn serve_with_tui(
     };
 
     // Create the site server - serves directly from Salsa, no disk I/O
-    let server = Arc::new(serve::SiteServer::new(render_options));
+    let server = Arc::new(serve::SiteServer::new(render_options, stable_assets));
 
     // Load cached query results (e.g., processed images) from disk
     let cache_path = content_dir.parent().unwrap_or(content_dir).join(".cache/dodeca.bin");
@@ -1565,7 +1569,7 @@ async fn serve_with_tui(
     });
 
     // Load source files into the server
-    let _ = event_tx.send(LogEvent::info("Loading source files..."));
+    let _ = event_tx.send(LogEvent::build("Loading source files..."));
     progress_tx.send_modify(|prog| prog.parse.start(0));
 
     let md_files: Vec<Utf8PathBuf> = WalkBuilder::new(content_dir)
@@ -1595,7 +1599,7 @@ async fn serve_with_tui(
     }
 
     progress_tx.send_modify(|prog| prog.parse.finish());
-    let _ = event_tx.send(LogEvent::info(format!(
+    let _ = event_tx.send(LogEvent::build(format!(
         "Loaded {} source files",
         md_files.len()
     )));
@@ -1634,7 +1638,7 @@ async fn serve_with_tui(
             templates.push(template);
         }
 
-        let _ = event_tx.send(LogEvent::info(format!(
+        let _ = event_tx.send(LogEvent::build(format!(
             "Loaded {} templates",
             templates.len()
         )));
@@ -1664,7 +1668,7 @@ async fn serve_with_tui(
             }
         }
 
-        let _ = event_tx.send(LogEvent::info(format!("Loaded {count} static files")));
+        let _ = event_tx.send(LogEvent::build(format!("Loaded {count} static files")));
     }
 
     // Load SASS files into Salsa (CSS compiled on-demand via query)
@@ -1699,14 +1703,14 @@ async fn serve_with_tui(
             sass_files.push(sass_file);
         }
 
-        let _ = event_tx.send(LogEvent::info(format!(
+        let _ = event_tx.send(LogEvent::build(format!(
             "Loaded {} SASS files",
             sass_files.len()
         )));
     }
 
     // Build initial search index in background
-    let _ = event_tx.send(LogEvent::info("Building search index..."));
+    let _ = event_tx.send(LogEvent::search("Building search index..."));
     let server_for_search = server.clone();
     let event_tx_for_search = event_tx.clone();
     std::thread::spawn(move || match rebuild_search_for_serve(&server_for_search) {
@@ -1714,12 +1718,15 @@ async fn serve_with_tui(
             let count = search_files.len();
             let mut sf = server_for_search.search_files.write().unwrap();
             *sf = search_files;
-            let _ = event_tx_for_search.send(LogEvent::info(format!(
-                "Search index ready ({count} files)"
+            let _ = event_tx_for_search.send(LogEvent::search(format!(
+                "Search index ready ({count} pages)"
             )));
         }
         Err(e) => {
-            let _ = event_tx_for_search.send(LogEvent::error(format!("Search index error: {e}")));
+            let _ = event_tx_for_search.send(
+                LogEvent::error(format!("Search index error: {e}"))
+                    .with_kind(crate::tui::EventKind::Search)
+            );
         }
     });
 
@@ -1729,7 +1736,7 @@ async fn serve_with_tui(
         prog.sass.finish();
     });
 
-    let _ = event_tx.send(LogEvent::info("Server ready - content served from memory"));
+    let _ = event_tx.send(LogEvent::server("Server ready - content served from memory"));
 
     // Set up file watcher for content and templates
     let (watch_tx, watch_rx) = mpsc::channel();
@@ -1753,7 +1760,7 @@ async fn serve_with_tui(
         watched_dirs.push("static".to_string());
     }
 
-    let _ = event_tx.send(LogEvent::info(format!(
+    let _ = event_tx.send(LogEvent::file_change(format!(
         "Watching: {}",
         watched_dirs.join(", ")
     )));
@@ -1790,13 +1797,13 @@ async fn serve_with_tui(
                 tui::BindMode::Local => "localhost only",
                 tui::BindMode::Lan => "LAN",
             };
-            let _ = event_tx.send(LogEvent::info(format!(
+            let _ = event_tx.send(LogEvent::server(format!(
                 "Binding to {} IPs ({})",
                 ips.len(),
                 mode_str
             )));
             for ip in &ips {
-                let _ = event_tx.send(LogEvent::info(format!("  → {ip}")));
+                let _ = event_tx.send(LogEvent::server(format!("  → {ip}")));
             }
 
             if let Err(e) = serve::run_on_ips(server, &ips, port, shutdown_rx).await {
@@ -1881,21 +1888,21 @@ async fn serve_with_tui(
                             }
 
                             for path in &paths {
-                                // Determine file type and emoji
+                                // Determine file type for logging
                                 let ext = path.extension();
                                 let filename = path.file_name().unwrap_or("?");
-                                let (emoji, file_type) = match ext {
-                                    Some("md") => ("📄", "content"),
-                                    Some("html") => ("🎨", "template"),
-                                    Some("scss") | Some("sass") => ("💅", "style"),
-                                    Some("css") => ("💅", "css"),
-                                    Some("js") | Some("ts") => ("📜", "script"),
-                                    Some("png") | Some("jpg") | Some("jpeg") | Some("gif") | Some("svg") | Some("webp") | Some("avif") => ("🖼️", "image"),
-                                    Some("woff") | Some("woff2") | Some("ttf") | Some("otf") => ("🔤", "font"),
-                                    _ => ("📁", "file"),
+                                let file_type = match ext {
+                                    Some("md") => "content",
+                                    Some("html") => "template",
+                                    Some("scss") | Some("sass") => "style",
+                                    Some("css") => "css",
+                                    Some("js") | Some("ts") => "script",
+                                    Some("png") | Some("jpg") | Some("jpeg") | Some("gif") | Some("svg") | Some("webp") | Some("avif") => "image",
+                                    Some("woff") | Some("woff2") | Some("ttf") | Some("otf") => "font",
+                                    _ => "file",
                                 };
                                 let _ = event_tx_for_watcher.send(
-                                    LogEvent::file_change(format!("{} {} changed: {}", emoji, file_type, filename))
+                                    LogEvent::file_change(format!("{} changed: {}", file_type, filename))
                                 );
 
                                 // Update the file in the server's Salsa database
@@ -2007,12 +2014,12 @@ async fn serve_with_tui(
                                             server_for_search.search_files.write().unwrap();
                                         *sf = search_files;
                                         let _ = event_tx_for_search.send(
-                                            LogEvent::search(format!("🔍 Search index updated ({count} pages indexed)"))
+                                            LogEvent::search(format!("Search index updated ({count} pages)"))
                                         );
                                     }
                                     Err(e) => {
                                         let _ = event_tx_for_search.send(
-                                            LogEvent::error(format!("🔍 Search rebuild failed: {e}"))
+                                            LogEvent::error(format!("Search rebuild failed: {e}"))
                                                 .with_kind(crate::tui::EventKind::Search)
                                         );
                                     }

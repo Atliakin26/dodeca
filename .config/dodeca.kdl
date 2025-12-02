@@ -3,3 +3,7 @@ output "docs/public"
 
 link_check {
 }
+
+stable_assets {
+    path "favicon.svg"
+}
