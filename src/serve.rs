@@ -73,8 +73,6 @@ impl SiteServer {
 
     /// Load cached query results from disk
     pub fn load_cache(&self, cache_path: &std::path::Path) -> Result<()> {
-        use bincode::Options;
-
         if !cache_path.exists() {
             tracing::info!("No cache file found at {:?}", cache_path);
             return Ok(());
@@ -83,13 +81,7 @@ impl SiteServer {
         let data = std::fs::read(cache_path)?;
         let mut db = self.db.lock().unwrap();
 
-        let mut deserializer = bincode::Deserializer::from_slice(
-            &data,
-            bincode::DefaultOptions::new()
-                .with_fixint_encoding()
-                .allow_trailing_bytes(),
-        );
-
+        let mut deserializer = postcard::Deserializer::from_bytes(&data);
         <dyn salsa::Database>::deserialize(&mut *db, &mut deserializer)?;
         tracing::info!("Loaded cache from {:?}", cache_path);
         Ok(())
@@ -98,7 +90,7 @@ impl SiteServer {
     /// Save cached query results to disk
     pub fn save_cache(&self, cache_path: &std::path::Path) -> Result<()> {
         let mut db = self.db.lock().unwrap();
-        let data = bincode::serialize(&<dyn salsa::Database>::as_serialize(&mut *db))?;
+        let data = postcard::to_allocvec(&<dyn salsa::Database>::as_serialize(&mut *db))?;
 
         // Write atomically via temp file
         let temp_path = cache_path.with_extension("tmp");

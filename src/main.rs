@@ -4,6 +4,7 @@ mod cache_bust;
 mod cas;
 mod config;
 mod db;
+mod html_diff;
 mod image;
 mod link_checker;
 mod logging;

@@ -168,13 +168,13 @@ pub fn get_cached_image(content_hash: &InputHash) -> Option<ProcessedImages> {
     let rx = db.begin_read().ok()?;
     let tree = rx.get_tree(b"processed").ok()??;
     let data = tree.get(&content_hash.0).ok()??;
-    bincode::deserialize(&data).ok()
+    postcard::from_bytes(&data).ok()
 }
 
 /// Store processed images by input content hash
 pub fn put_cached_image(content_hash: &InputHash, images: &ProcessedImages) {
     let Some(db) = IMAGE_CACHE.get() else { return };
-    let Ok(data) = bincode::serialize(images) else { return };
+    let Ok(data) = postcard::to_allocvec(images) else { return };
 
     let Ok(tx) = db.begin_write() else { return };
     let Ok(mut tree) = tx.get_or_create_tree(b"processed") else { return };

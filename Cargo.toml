@@ -2,7 +2,7 @@
 name = "dodeca"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.91"
 authors = ["Amos Wenger <amos@bearcove.eu>"]
 license = "MIT OR Apache-2.0"
 description = "A fully incremental static site generator"
@@ -79,9 +79,9 @@ cidr = "0.3"
 # Incremental computation
 salsa = { version = "0.24", features = ["persistence"] }
 
-# Serialization (for salsa persistence)
+# Serialization
 serde = { version = "1", features = ["derive"] }
-bincode = "1"
+postcard = "1"             # Fast, compact binary serialization with serde
 
 # Content-addressed storage
 rapidhash = "4"
@@ -107,7 +107,7 @@ url = "2"  # URL parsing for domain extraction
 # URL rewriting (precise, parser-based)
 lol_html = "2.7"        # Streaming HTML rewriter
 lightningcss = { version = "1.0.0-alpha.68", features = ["visitor"] }  # CSS parser/transformer
-oxc = { version = "0.96", features = ["full"] }  # JS parser/minifier (0.96 for Rust 1.88 compat)
+oxc = { version = "0.100", features = ["full"] }  # JS parser/minifier
 
 # Font subsetting (static analysis + klippa backend)
 fontcull = { version = "1.0.4", default-features = false, features = ["klippa", "static-analysis"] }
@@ -128,6 +128,10 @@ thumbhash = "0.1"  # Compact image placeholders (~28 bytes)
 # HTML minification
 minify-html = "0.18"
 
+# HTML parsing (for DOM diffing)
+html5ever = "0.36"
+markup5ever_rcdom = "0.36"
+
 # SVG optimization
 svag = { git = "https://github.com/bearcove/svag" }
 
@@ -138,6 +142,11 @@ nom = "7"     # 7+ drops lexical-core 0.7 (broken usize/u32 ops)
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["blocking"] }
+divan = "0.1"
+
+[[bench]]
+name = "html_diff"
+harness = false
 
 # Optimize dependencies in dev mode for faster tests
 # (keeps main crate unoptimized for fast incremental builds)
