@@ -246,7 +246,7 @@ pub fn try_render_page_to_html(
     let mut engine = Engine::new(loader);
 
     let mut ctx = build_render_context(site_tree, data);
-    ctx.set("page", page_to_value(page));
+    ctx.set("page", page_to_value(page, site_tree));
     ctx.set(
         "current_path",
         Value::String(page.route.as_str().to_string()),
@@ -582,8 +582,44 @@ fn build_toc_subtree(headings: &[Heading], start: usize, parent_level: u8) -> (V
     (result, i)
 }
 
+/// Build the ancestor chain for a page (ordered from root to immediate parent)
+fn build_ancestors(section_route: &Route, site_tree: &SiteTree) -> Vec<Value> {
+    let mut ancestors = Vec::new();
+    let mut current = section_route.clone();
+
+    // Walk up the route hierarchy, collecting all ancestor sections
+    loop {
+        if let Some(section) = site_tree.sections.get(&current) {
+            let mut ancestor_map = HashMap::new();
+            ancestor_map.insert(
+                "title".to_string(),
+                Value::String(section.title.as_str().to_string()),
+            );
+            ancestor_map.insert(
+                "permalink".to_string(),
+                Value::String(section.route.as_str().to_string()),
+            );
+            ancestor_map.insert(
+                "path".to_string(),
+                Value::String(route_to_path(section.route.as_str())),
+            );
+            ancestor_map.insert("weight".to_string(), Value::Int(section.weight as i64));
+            ancestors.push(Value::Dict(ancestor_map));
+        }
+
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => break,
+        }
+    }
+
+    // Reverse so it's root -> ... -> immediate parent
+    ancestors.reverse();
+    ancestors
+}
+
 /// Convert a Page to a Value for template context
-fn page_to_value(page: &Page) -> Value {
+fn page_to_value(page: &Page, site_tree: &SiteTree) -> Value {
     let mut map = HashMap::new();
     map.insert(
         "title".to_string(),
@@ -603,6 +639,10 @@ fn page_to_value(page: &Page) -> Value {
     );
     map.insert("weight".to_string(), Value::Int(page.weight as i64));
     map.insert("toc".to_string(), headings_to_value(&page.headings));
+    map.insert(
+        "ancestors".to_string(),
+        Value::List(build_ancestors(&page.section_route, site_tree)),
+    );
     Value::Dict(map)
 }
 
