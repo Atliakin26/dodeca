@@ -101,21 +101,62 @@ fn build_wasm() -> bool {
     }
 }
 
+/// Discover plugin crates by looking for dodeca-* directories with cdylib crate type
+fn discover_plugins() -> Vec<String> {
+    let crates_dir = PathBuf::from("crates");
+    let mut plugins = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(&crates_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !name.starts_with("dodeca-") {
+                continue;
+            }
+
+            // Check if it's a cdylib (plugin)
+            let cargo_toml = path.join("Cargo.toml");
+            if let Ok(content) = fs::read_to_string(&cargo_toml) {
+                if content.contains("cdylib") {
+                    plugins.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    plugins.sort();
+    plugins
+}
+
 fn build_plugins(release: bool) -> bool {
+    let plugins = discover_plugins();
+    if plugins.is_empty() {
+        eprintln!("No plugins found to build");
+        return true;
+    }
+
     eprintln!(
-        "Building plugins{}...",
+        "Building {} plugins{}...",
+        plugins.len(),
         if release { " (release)" } else { "" }
     );
 
     let mut cmd = Command::new("cargo");
-    cmd.args(["build", "-p", "dodeca-webp", "-p", "dodeca-jxl"]);
+    cmd.arg("build");
+    for plugin in &plugins {
+        cmd.args(["-p", plugin]);
+    }
     if release {
         cmd.arg("--release");
     }
 
     match cmd.status() {
         Ok(s) if s.success() => {
-            eprintln!("Plugins built");
+            eprintln!("Plugins built: {}", plugins.join(", "));
             true
         }
         Ok(s) => {
@@ -227,19 +268,22 @@ fn install_dev() -> bool {
         "so"
     };
 
-    let plugins = ["libdodeca_webp", "libdodeca_jxl"];
-    for plugin in plugins {
-        let src = PathBuf::from(format!("target/release/{plugin}.{plugin_ext}"));
-        let dst = cargo_bin.join(format!("{plugin}.{plugin_ext}"));
+    // Discover and install all plugins
+    let plugins = discover_plugins();
+    for plugin in &plugins {
+        // Convert crate name (dodeca-webp) to lib name (libdodeca_webp)
+        let lib_name = format!("lib{}", plugin.replace('-', "_"));
+        let src = PathBuf::from(format!("target/release/{lib_name}.{plugin_ext}"));
+        let dst = cargo_bin.join(format!("{lib_name}.{plugin_ext}"));
         if src.exists() {
             let _ = fs::remove_file(&dst); // Remove first to avoid "text file busy"
             if let Err(e) = fs::copy(&src, &dst) {
-                eprintln!("Failed to copy {plugin}: {e}");
+                eprintln!("Failed to copy {lib_name}: {e}");
                 return false;
             }
-            eprintln!("  Installed {plugin}.{plugin_ext}");
+            eprintln!("  Installed {lib_name}.{plugin_ext}");
         } else {
-            eprintln!("  Warning: {plugin}.{plugin_ext} not found, skipping");
+            eprintln!("  Warning: {lib_name}.{plugin_ext} not found, skipping");
         }
     }
 
