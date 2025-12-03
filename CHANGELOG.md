@@ -1,3 +1,9 @@
+## 0.2.11 (2025-12-03)
+
+### Fixes
+
+- upgrade fontcull to 2.0 (fixes Windows build - no zlib dep)
+
 ## 0.2.10 (2025-12-03)
 
 ### Fixes
