@@ -1,7 +1,7 @@
 - name: Install cargo-binstall
   uses: cargo-bins/cargo-binstall@main
 - name: Install wasm-bindgen-cli
-  run: cargo binstall wasm-bindgen-cli -y --force
+  run: cargo binstall wasm-bindgen-cli@0.2.106 -y --force
 - name: Add wasm32 target
   run: rustup target add wasm32-unknown-unknown
 - name: Build livereload-client WASM

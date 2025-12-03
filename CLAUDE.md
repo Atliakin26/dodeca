@@ -13,3 +13,10 @@ Note: knope requires TTY for the Release step confirmation, so you may need to c
 ## Building
 
 Use `cargo xtask build` to build everything (WASM, plugins, and dodeca).
+
+## WASM Build Notes
+
+The livereload-client is built with wasm-bindgen. The wasm-bindgen-cli version
+must exactly match the wasm-bindgen library version in Cargo.lock. Check
+`.github/build-setup.yml` and update the version there when updating
+wasm-bindgen in Cargo.toml.
