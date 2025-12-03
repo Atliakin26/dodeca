@@ -130,7 +130,10 @@ jobs:
       - name: "Install cargo-binstall"
         uses: "cargo-bins/cargo-binstall@main"
       - name: "Install wasm-bindgen-cli"
-        run: "cargo binstall wasm-bindgen-cli@0.2.106 -y --force"
+        run: |
+          VERSION=$(grep -A1 'name = "wasm-bindgen"' Cargo.lock | grep version | head -1 | cut -d'"' -f2)
+          cargo binstall "wasm-bindgen-cli@=$VERSION" -y --force
+        shell: "bash"
       - name: "Add wasm32 target"
         run: "rustup target add wasm32-unknown-unknown"
       - name: "Build livereload-client WASM"
