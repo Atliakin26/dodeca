@@ -18,7 +18,16 @@ dodeca includes a Jinja-like template engine built for tight integration with Sa
 {% endblock %}
 ```
 
-Templates receive `page` (title, content, permalink, toc), `section` (title, content, pages, subsections), and `config`.
+Templates receive `page` (title, content, permalink, path, weight, toc, ancestors), `section` (title, content, pages, subsections), and `config`.
+
+The `ancestors` field is an ordered list of parent sections from root to immediate parent, useful for breadcrumbs:
+
+```jinja
+{% for ancestor in page.ancestors %}
+  <a href="{{ ancestor.permalink }}">{{ ancestor.title }}</a> /
+{% endfor %}
+{{ page.title }}
+```
 
 Filters: `safe` (no escaping), `upper`, `lower`, `trim`, `default(value)`.
 
