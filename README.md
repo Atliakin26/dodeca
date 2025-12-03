@@ -37,7 +37,6 @@ tiny ~28 byte placeholder that displays instantly while the real image loads.
 
 - incremental builds via [Salsa](https://salsa-rs.github.io/salsa/)
 - font subsetting (only include glyphs actually used)
-- OG image generation with Typst
 - live-reload dev server
 - Jinja-like template engine with macros and imports
 - Sass/SCSS compilation
