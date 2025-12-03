@@ -13,7 +13,7 @@ type = "PrepareRelease"
 
 [[workflows.steps]]
 type = "Command"
-command = "cargo check --locked"
+command = "cargo check"
 
 [[workflows.steps]]
 type = "Command"
