@@ -1,3 +1,9 @@
+## 0.2.9 (2025-12-03)
+
+### Fixes
+
+- use cargo metadata for cross-platform wasm-bindgen version detection
+
 ## 0.2.8 (2025-12-03)
 
 ### Fixes
