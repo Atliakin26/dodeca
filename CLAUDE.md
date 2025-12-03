@@ -1,0 +1,15 @@
+# Claude Code Instructions for dodeca
+
+## Releasing
+
+Use `knope release` to prepare and publish releases. Knope will:
+- Bump version based on conventional commits
+- Update CHANGELOG.md
+- Commit changes
+- Create and push git tag
+
+Note: knope requires TTY for the Release step confirmation, so you may need to create and push the tag manually after knope prepares the release.
+
+## Building
+
+Use `cargo xtask build` to build everything (WASM, plugins, and dodeca).
