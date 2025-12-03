@@ -1,8 +1,8 @@
 use crate::db::{
-    AllRenderedHtml, CharSet, CssOutput, Db, Heading, ImageVariant, OutputFile, Page, ParsedData,
-    ProcessedImages, RenderedHtml, SassFile, SassRegistry, Section, SiteOutput, SiteTree,
-    SourceFile, SourceRegistry, StaticFile, StaticFileOutput, StaticRegistry, TemplateFile,
-    TemplateRegistry,
+    AllRenderedHtml, CharSet, CssOutput, DataRegistry, Db, Heading, ImageVariant,
+    OutputFile, Page, ParsedData, ProcessedImages, RenderedHtml, SassFile, SassRegistry, Section,
+    SiteOutput, SiteTree, SourceFile, SourceRegistry, StaticFile, StaticFileOutput, StaticRegistry,
+    TemplateFile, TemplateRegistry,
 };
 use crate::image::{self, InputFormat, OutputFormat, add_width_suffix};
 use crate::types::{HtmlBody, Route, SassContent, StaticPath, TemplateContent, Title};
@@ -53,6 +53,26 @@ pub fn load_all_sass<'db>(db: &'db dyn Db, registry: SassRegistry<'db>) -> HashM
         result.insert(path, content.as_str().to_string());
     }
     result
+}
+
+/// Load all data files and return their raw content
+/// This tracked query records dependencies on all data files
+/// The conversion to template Value happens at render time
+#[salsa::tracked]
+pub fn load_all_data_raw<'db>(
+    db: &'db dyn Db,
+    registry: DataRegistry<'db>,
+) -> Vec<(String, String)> {
+    registry
+        .files(db)
+        .iter()
+        .map(|file| {
+            (
+                file.path(db).as_str().to_string(),
+                file.content(db).as_str().to_string(),
+            )
+        })
+        .collect()
 }
 
 /// Compiled CSS output
@@ -254,7 +274,7 @@ fn find_parent_section(route: &Route, sections: &BTreeMap<Route, Section>) -> Ro
 }
 
 /// Render a single page to HTML
-/// This tracked query depends on the page content, templates, and site tree
+/// This tracked query depends on the page content, templates, data files, and site tree
 #[salsa::tracked]
 #[tracing::instrument(skip_all, name = "render_page")]
 pub fn render_page<'db>(
@@ -262,6 +282,7 @@ pub fn render_page<'db>(
     route: Route,
     sources: SourceRegistry<'db>,
     templates: TemplateRegistry<'db>,
+    data: DataRegistry<'db>,
 ) -> RenderedHtml {
     use crate::render::render_page_to_html;
 
@@ -271,6 +292,10 @@ pub fn render_page<'db>(
     // Load templates (cached by Salsa)
     let template_map = load_all_templates(db, templates);
 
+    // Load data files (cached by Salsa) and convert to template Value
+    let raw_data = load_all_data_raw(db, data);
+    let data_value = crate::data::parse_raw_data_files(&raw_data);
+
     // Find the page
     let page = site_tree
         .pages
@@ -278,12 +303,12 @@ pub fn render_page<'db>(
         .expect("Page not found for route");
 
     // Render to HTML
-    let html = render_page_to_html(page, &site_tree, &template_map);
+    let html = render_page_to_html(page, &site_tree, &template_map, Some(data_value));
     RenderedHtml(html)
 }
 
 /// Render a single section to HTML
-/// This tracked query depends on the section content, templates, and site tree
+/// This tracked query depends on the section content, templates, data files, and site tree
 #[salsa::tracked]
 #[tracing::instrument(skip_all, name = "render_section")]
 pub fn render_section<'db>(
@@ -291,6 +316,7 @@ pub fn render_section<'db>(
     route: Route,
     sources: SourceRegistry<'db>,
     templates: TemplateRegistry<'db>,
+    data: DataRegistry<'db>,
 ) -> RenderedHtml {
     use crate::render::render_section_to_html;
 
@@ -300,6 +326,10 @@ pub fn render_section<'db>(
     // Load templates (cached by Salsa)
     let template_map = load_all_templates(db, templates);
 
+    // Load data files (cached by Salsa) and convert to template Value
+    let raw_data = load_all_data_raw(db, data);
+    let data_value = crate::data::parse_raw_data_files(&raw_data);
+
     // Find the section
     let section = site_tree
         .sections
@@ -307,7 +337,7 @@ pub fn render_section<'db>(
         .expect("Section not found for route");
 
     // Render to HTML
-    let html = render_section_to_html(section, &site_tree, &template_map);
+    let html = render_section_to_html(section, &site_tree, &template_map, Some(data_value));
     RenderedHtml(html)
 }
 
@@ -350,6 +380,46 @@ pub fn load_all_static<'db>(
     result
 }
 
+/// Decompress a font file (WOFF2/WOFF1 -> TTF/OTF)
+/// Results are cached in the CAS to avoid repeated decompression
+#[salsa::tracked]
+#[tracing::instrument(skip_all, name = "decompress_font")]
+pub fn decompress_font(db: &dyn Db, font_file: StaticFile) -> Option<Vec<u8>> {
+    use crate::cas::{font_content_hash, get_cached_decompressed_font, put_cached_decompressed_font};
+    use fontcull::decompress_font as fc_decompress;
+
+    let font_data = font_file.content(db);
+    let content_hash = font_content_hash(font_data);
+
+    // Check CAS cache first
+    if let Some(cached) = get_cached_decompressed_font(&content_hash) {
+        tracing::debug!("Font decompression cache hit for {}", font_file.path(db).as_str());
+        return Some(cached);
+    }
+
+    // Decompress the font
+    match fc_decompress(font_data) {
+        Ok(decompressed) => {
+            // Cache the result
+            put_cached_decompressed_font(&content_hash, &decompressed);
+            tracing::debug!("Decompressed font {} ({} -> {} bytes)",
+                font_file.path(db).as_str(),
+                font_data.len(),
+                decompressed.len()
+            );
+            Some(decompressed)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to decompress font {}: {}",
+                font_file.path(db).as_str(),
+                e
+            );
+            None
+        }
+    }
+}
+
 /// Subset a font file to only include specified characters
 /// Returns WOFF2 compressed bytes, or None if subsetting fails
 #[salsa::tracked]
@@ -359,17 +429,42 @@ pub fn subset_font<'db>(
     font_file: StaticFile,
     chars: CharSet<'db>,
 ) -> Option<Vec<u8>> {
-    use fontcull::subset_font_to_woff2;
+    use fontcull::{compress_to_woff2, subset_font_data};
     use std::collections::HashSet;
 
-    let font_data = font_file.content(db);
+    // First, decompress the font (handles WOFF2/WOFF1 -> TTF)
+    let decompressed = decompress_font(db, font_file)?;
+
     let char_set: HashSet<char> = chars.chars(db).iter().copied().collect();
 
-    match subset_font_to_woff2(font_data, &char_set) {
-        Ok(subsetted) => Some(subsetted),
+    // Subset the decompressed TTF
+    let subsetted = match subset_font_data(&decompressed, &char_set) {
+        Ok(data) => data,
         Err(e) => {
             tracing::warn!(
                 "Failed to subset font {}: {}",
+                font_file.path(db).as_str(),
+                e
+            );
+            return None;
+        }
+    };
+
+    // Compress back to WOFF2
+    match compress_to_woff2(&subsetted) {
+        Ok(woff2) => {
+            tracing::debug!(
+                "Subsetted font {} ({} chars, {} -> {} bytes)",
+                font_file.path(db).as_str(),
+                char_set.len(),
+                decompressed.len(),
+                woff2.len()
+            );
+            Some(woff2)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to compress font {} to WOFF2: {}",
                 font_file.path(db).as_str(),
                 e
             );
@@ -463,6 +558,7 @@ pub fn build_site<'db>(
     templates: TemplateRegistry<'db>,
     sass: SassRegistry<'db>,
     static_files: StaticRegistry<'db>,
+    data: DataRegistry<'db>,
 ) -> SiteOutput {
     use crate::cache_bust::{cache_busted_path, content_hash};
 
@@ -473,24 +569,37 @@ pub fn build_site<'db>(
     let mut html_outputs: Vec<(Route, String)> = Vec::new();
 
     for route in site_tree.sections.keys() {
-        let rendered = render_section(db, route.clone(), sources, templates);
+        let rendered = render_section(db, route.clone(), sources, templates, data);
         html_outputs.push((route.clone(), rendered.0));
     }
 
     for route in site_tree.pages.keys() {
-        let rendered = render_page(db, route.clone(), sources, templates);
+        let rendered = render_page(db, route.clone(), sources, templates, data);
         html_outputs.push((route.clone(), rendered.0));
     }
 
     // --- Phase 2: Compile CSS ---
-    let css_content = compile_sass(db, sass);
-    let css_str = css_content.as_ref().map(|c| c.0.as_str()).unwrap_or("");
+    let sass_css = compile_sass(db, sass);
+    let sass_str = sass_css.as_ref().map(|c| c.0.as_str()).unwrap_or("");
+
+    // Collect CSS from static files
+    let mut static_css_parts = Vec::new();
+    for file in static_files.files(db) {
+        let path = file.path(db).as_str();
+        if path.to_lowercase().ends_with(".css") {
+            let content = load_static(db, *file);
+            if let Ok(css_str) = String::from_utf8(content) {
+                static_css_parts.push(css_str);
+            }
+        }
+    }
+    let static_css = static_css_parts.join("\n");
 
     // --- Phase 3: Analyze fonts for subsetting ---
     let html_refs: Vec<&str> = html_outputs.iter().map(|(_, h)| h.as_str()).collect();
     let combined_html = html_refs.join("\n");
     let inline_css = fontcull::extract_css_from_html(&combined_html);
-    let all_css = format!("{css_str}\n{inline_css}");
+    let all_css = format!("{sass_str}\n{static_css}\n{inline_css}");
     let font_analysis = fontcull::analyze_fonts(&combined_html, &all_css);
 
     // --- Phase 4: Process static files (with font subsetting and image transcoding) ---
@@ -618,7 +727,7 @@ pub fn build_site<'db>(
         .collect();
 
     // --- Phase 5: Rewrite CSS and hash it ---
-    let (css_path, css_final) = if let Some(ref css) = css_content {
+    let (css_path, css_final) = if let Some(ref css) = sass_css {
         let rewritten_css = rewrite_urls_in_css(&css.0, &static_path_map);
         let css_hash = content_hash(rewritten_css.as_bytes());
         let css_path = cache_busted_path("main.css", &css_hash);
@@ -679,18 +788,34 @@ pub fn all_rendered_html<'db>(
     db: &'db dyn Db,
     sources: SourceRegistry<'db>,
     templates: TemplateRegistry<'db>,
+    data: DataRegistry<'db>,
 ) -> AllRenderedHtml {
     let site_tree = build_tree(db, sources);
     let template_map = load_all_templates(db, templates);
+
+    // Load data files and convert to template Value
+    let raw_data = load_all_data_raw(db, data);
+    let data_value = crate::data::parse_raw_data_files(&raw_data);
+
     let mut pages = HashMap::new();
 
     for (route, section) in &site_tree.sections {
-        let html = crate::render::render_section_to_html(section, &site_tree, &template_map);
+        let html = crate::render::render_section_to_html(
+            section,
+            &site_tree,
+            &template_map,
+            Some(data_value.clone()),
+        );
         pages.insert(route.clone(), html);
     }
 
     for (route, page) in &site_tree.pages {
-        let html = crate::render::render_page_to_html(page, &site_tree, &template_map);
+        let html = crate::render::render_page_to_html(
+            page,
+            &site_tree,
+            &template_map,
+            Some(data_value.clone()),
+        );
         pages.insert(route.clone(), html);
     }
 
@@ -705,16 +830,31 @@ pub fn font_char_analysis<'db>(
     sources: SourceRegistry<'db>,
     templates: TemplateRegistry<'db>,
     sass: SassRegistry<'db>,
+    static_files: StaticRegistry<'db>,
+    data: DataRegistry<'db>,
 ) -> fontcull::FontAnalysis {
 
-    let all_html = all_rendered_html(db, sources, templates);
-    let css_content = compile_sass(db, sass);
-    let css_str = css_content.as_ref().map(|c| c.0.as_str()).unwrap_or("");
+    let all_html = all_rendered_html(db, sources, templates, data);
+    let sass_css = compile_sass(db, sass);
+    let sass_str = sass_css.as_ref().map(|c| c.0.as_str()).unwrap_or("");
+
+    // Collect CSS from static files
+    let mut static_css_parts = Vec::new();
+    for file in static_files.files(db) {
+        let path = file.path(db).as_str();
+        if path.to_lowercase().ends_with(".css") {
+            let content = load_static(db, *file);
+            if let Ok(css_str) = String::from_utf8(content) {
+                static_css_parts.push(css_str);
+            }
+        }
+    }
+    let static_css = static_css_parts.join("\n");
 
     // Combine all HTML for analysis
     let combined_html: String = all_html.pages.values().cloned().collect::<Vec<_>>().join("\n");
     let inline_css = fontcull::extract_css_from_html(&combined_html);
-    let all_css = format!("{css_str}\n{inline_css}");
+    let all_css = format!("{sass_str}\n{static_css}\n{inline_css}");
 
     fontcull::analyze_fonts(&combined_html, &all_css)
 }
@@ -730,6 +870,7 @@ pub fn static_file_output<'db>(
     templates: TemplateRegistry<'db>,
     sass: SassRegistry<'db>,
     static_files: StaticRegistry<'db>,
+    data: DataRegistry<'db>,
 ) -> StaticFileOutput {
     use crate::cache_bust::{cache_busted_path, content_hash};
 
@@ -740,7 +881,7 @@ pub fn static_file_output<'db>(
     // Get processed content based on file type
     let content = if is_font_file(path) {
         // Font file - need to subset based on char analysis
-        let analysis = font_char_analysis(db, sources, templates, sass);
+        let analysis = font_char_analysis(db, sources, templates, sass, static_files, data);
         if let Some(chars) = find_chars_for_font_file(path, &analysis) {
             if !chars.is_empty() {
                 let mut sorted_chars: Vec<char> = chars.into_iter().collect();
@@ -776,7 +917,7 @@ pub fn static_file_output<'db>(
             {
                 // Recursively get the output for this file (safe - no CSS files)
                 let other_output =
-                    static_file_output(db, *other_file, sources, templates, sass, static_files);
+                    static_file_output(db, *other_file, sources, templates, sass, static_files, data);
                 path_map.insert(
                     format!("/{other_path}"),
                     format!("/{}", other_output.cache_busted_path),
@@ -810,6 +951,7 @@ pub fn css_output<'db>(
     templates: TemplateRegistry<'db>,
     sass: SassRegistry<'db>,
     static_files: StaticRegistry<'db>,
+    data: DataRegistry<'db>,
 ) -> Option<CssOutput> {
     use crate::cache_bust::{cache_busted_path, content_hash};
     use crate::url_rewrite::rewrite_urls_in_css;
@@ -822,7 +964,7 @@ pub fn css_output<'db>(
         let original_path = file.path(db).as_str();
         // Skip images - they get transcoded to different formats
         if !InputFormat::is_processable(original_path) {
-            let output = static_file_output(db, *file, sources, templates, sass, static_files);
+            let output = static_file_output(db, *file, sources, templates, sass, static_files, data);
             static_path_map.insert(
                 format!("/{original_path}"),
                 format!("/{}", output.cache_busted_path),
@@ -854,6 +996,7 @@ pub fn serve_html<'db>(
     templates: TemplateRegistry<'db>,
     sass: SassRegistry<'db>,
     static_files: StaticRegistry<'db>,
+    data: DataRegistry<'db>,
 ) -> Option<String> {
     use crate::url_rewrite::{rewrite_urls_in_html, transform_images_to_picture, ResponsiveImageInfo};
 
@@ -866,14 +1009,14 @@ pub fn serve_html<'db>(
     }
 
     // Get the raw HTML for this route
-    let all_html = all_rendered_html(db, sources, templates);
+    let all_html = all_rendered_html(db, sources, templates, data);
     let raw_html = all_html.pages.get(&route).cloned()?;
 
     // Build the full URL rewrite map
     let mut path_map: HashMap<String, String> = HashMap::new();
 
     // Add CSS path
-    if let Some(css) = css_output(db, sources, templates, sass, static_files) {
+    if let Some(css) = css_output(db, sources, templates, sass, static_files, data) {
         path_map.insert("/main.css".to_string(), format!("/{}", css.cache_busted_path));
     }
 
@@ -881,7 +1024,7 @@ pub fn serve_html<'db>(
     for file in static_files.files(db) {
         let original_path = file.path(db).as_str();
         if !InputFormat::is_processable(original_path) {
-            let output = static_file_output(db, *file, sources, templates, sass, static_files);
+            let output = static_file_output(db, *file, sources, templates, sass, static_files, data);
             path_map.insert(
                 format!("/{original_path}"),
                 format!("/{}", output.cache_busted_path),
@@ -976,8 +1119,12 @@ fn find_chars_for_font_file(
     path: &str,
     analysis: &fontcull::FontAnalysis,
 ) -> Option<std::collections::HashSet<char>> {
-    // Normalize path for comparison (remove leading slash if present)
-    let normalized = path.trim_start_matches('/');
+    // Normalize path: remove leading slash and 'static/' prefix
+    // File paths are like "static/fonts/Foo.woff2"
+    // CSS URLs are like "/fonts/Foo.woff2"
+    let normalized = path
+        .trim_start_matches('/')
+        .trim_start_matches("static/");
 
     // Find @font-face rules that reference this font file
     for face in &analysis.font_faces {
