@@ -128,11 +128,9 @@ jobs:
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
       - name: "Install wasm-pack"
-        run: |
-          "curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh"
+        uses: "jetli/wasm-pack-action@v0.4.0"
       - name: "Build livereload-client WASM"
-        run: |
-          "wasm-pack build --target web crates/livereload-client"
+        run: "wasm-pack build --target web crates/livereload-client"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
