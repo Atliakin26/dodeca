@@ -127,8 +127,10 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Install cargo-binstall"
+        uses: "cargo-bins/cargo-binstall@main"
       - name: "Install wasm-pack"
-        run: "cargo install wasm-pack"
+        run: "cargo binstall wasm-pack -y --force"
       - name: "Build livereload-client WASM"
         run: "wasm-pack build --target web crates/livereload-client"
       - name: Install dist
