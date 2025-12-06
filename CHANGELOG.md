@@ -1,3 +1,12 @@
+## 0.2.13 (2025-12-06)
+
+### Features
+
+- add devtools overlay, copy buttons, and extra frontmatter (#103)
+- extract image processing to plugin (dodeca-image) (#112)
+- extract font processing to plugin (dodeca-fonts) (#113)
+- extract link checking to plugin (dodeca-linkcheck) (#114)
+
 ## 0.2.12 (2025-12-04)
 
 ### Features
