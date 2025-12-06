@@ -72,6 +72,21 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("generate-ps1-installer") => {
+            // Generate PowerShell installer to specified path
+            if let Some(output_path) = args.get(1) {
+                let content = ci::generate_powershell_installer();
+                if let Err(e) = fs::write(output_path, content) {
+                    eprintln!("Error writing PowerShell installer: {e}");
+                    return ExitCode::FAILURE;
+                }
+                eprintln!("Generated PowerShell installer: {output_path}");
+                ExitCode::SUCCESS
+            } else {
+                eprintln!("Usage: cargo xtask generate-ps1-installer <output-path>");
+                ExitCode::FAILURE
+            }
+        }
         _ => {
             eprintln!("Usage:");
             eprintln!("  cargo xtask build [--release]        Build WASM + plugins + dodeca");

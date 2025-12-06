@@ -50,8 +50,11 @@ pub const TARGETS: &[Target] = &[
 pub const PLUGINS: &[&str] = &[
     "dodeca-baseline",
     "dodeca-css",
+    "dodeca-fonts",
+    "dodeca-image",
     "dodeca-js",
     "dodeca-jxl",
+    "dodeca-linkcheck",
     "dodeca-minify",
     "dodeca-pagefind",
     "dodeca-sass",
@@ -397,109 +400,34 @@ pub fn build_release_workflow() -> Workflow {
         let job_id = format!("build-{}", target.short_name());
         let archive_name = format!("dodeca-{}.{}", target.triple, target.archive_ext);
 
-        let plugin_packages: String = PLUGINS.iter().map(|p| format!("-p {p}")).collect::<Vec<_>>().join(" ");
-
-        let plugin_files: String = PLUGINS
-            .iter()
-            .map(|p| {
-                let lib_name = p.replace('-', "_");
-                format!("target/{}/release/{}{}.{}", target.triple, target.lib_prefix, lib_name, target.lib_ext)
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        let archive_cmd = if target.archive_ext == "zip" {
-            format!(
-                r#"cd staging && 7z a -tzip "../{archive_name}" ."#,
-            )
-        } else {
-            format!(
-                r#"tar -cJf "{archive_name}" -C staging ."#,
-            )
-        };
-
         let mut steps = vec![
             checkout(),
         ];
 
-        // Linux targets need cross-compilation setup for ARM
+        // Linux ARM needs cross-compilation tools
         if target.triple == "aarch64-unknown-linux-gnu" {
             steps.push(install_rust_with_target(target.triple));
             steps.push(Step::run("Install cross-compilation tools", "sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu"));
             steps.push(rust_cache());
-        } else if target.triple.contains("windows") {
-            steps.push(install_rust_with_target(target.triple));
-            steps.push(rust_cache());
-        } else if target.triple.contains("apple") {
-            steps.push(install_rust_with_target(target.triple));
-            steps.push(rust_cache());
         } else {
             steps.push(install_rust_with_target(target.triple));
             steps.push(rust_cache());
         }
 
-        // Install wasm-bindgen for livereload client
-        steps.push(Step::run("Install wasm-bindgen", r#"
-cargo install wasm-bindgen-cli --version $(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version' | head -1)
-"#.trim()).shell("bash"));
+        // Build WASM (uses external script)
+        steps.push(Step::run("Build WASM crates", "bash scripts/build-wasm.sh").shell("bash"));
 
-        // Add wasm32 target and build WASM crates (livereload-client and dodeca-devtools)
-        steps.push(Step::run("Add wasm32 target", "rustup target add wasm32-unknown-unknown"));
+        // Build target (uses external script)
+        steps.push(Step::run(
+            "Build ddc and plugins",
+            format!("bash scripts/build-target.sh {}", target.triple),
+        ).shell("bash"));
 
-        // Use full path on Windows since ~/.cargo/bin isn't in PATH
-        let wasm_bindgen_cmd = if target.triple.contains("windows") {
-            "$HOME/.cargo/bin/wasm-bindgen"
-        } else {
-            "wasm-bindgen"
-        };
-        steps.push(Step::run("Build WASM crates", format!(r#"
-cargo build -p livereload-client -p dodeca-devtools --target wasm32-unknown-unknown --release
-{wasm_bindgen_cmd} --target web --out-dir crates/livereload-client/pkg target/wasm32-unknown-unknown/release/livereload_client.wasm
-{wasm_bindgen_cmd} --target web --out-dir crates/dodeca-devtools/pkg target/wasm32-unknown-unknown/release/dodeca_devtools.wasm
-"#).trim()).shell("bash"));
-
-        // Build ddc
-        let build_env = if target.triple == "aarch64-unknown-linux-gnu" {
-            Some(vec![
-                ("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER", "aarch64-linux-gnu-gcc"),
-            ])
-        } else {
-            None
-        };
-
-        let mut build_step = Step::run(
-            "Build ddc",
-            format!("cargo build --release --target {} -p dodeca", target.triple),
-        );
-        if let Some(env) = build_env.clone() {
-            build_step = build_step.with_env(env);
-        }
-        steps.push(build_step);
-
-        // Build plugins
-        let mut plugins_step = Step::run(
-            "Build plugins",
-            format!("cargo build --release --target {} {}", target.triple, plugin_packages),
-        );
-        if let Some(env) = build_env {
-            plugins_step = plugins_step.with_env(env);
-        }
-        steps.push(plugins_step);
-
-        // Assemble archive
-        let binary_name = if target.triple.contains("windows") { "ddc.exe" } else { "ddc" };
-        steps.push(Step::run("Assemble archive", format!(r#"
-mkdir -p staging
-cp target/{triple}/release/{binary_name} staging/
-mkdir -p staging/plugins
-cp {plugin_files} staging/plugins/
-{archive_cmd}
-"#,
-            triple = target.triple,
-            binary_name = binary_name,
-            plugin_files = plugin_files,
-            archive_cmd = archive_cmd,
-        ).trim()).shell("bash"));
+        // Assemble archive (uses external script)
+        steps.push(Step::run(
+            "Assemble archive",
+            format!("bash scripts/assemble-archive.sh {}", target.triple),
+        ).shell("bash"));
 
         // Upload
         steps.push(upload_artifact(format!("build-{}", target.short_name()), archive_name));
@@ -528,13 +456,9 @@ cp {plugin_files} staging/plugins/
             .env([("GH_TOKEN", "${{ secrets.GITHUB_TOKEN }}")])
             .steps([
                 checkout(),
+                Step::uses("Install Rust", "dtolnay/rust-toolchain@stable"),
                 download_all_artifacts("dist"),
-                Step::run("List artifacts", "find dist -type f | sort"),
-                Step::run("Generate checksums", r#"
-cd dist
-sha256sum * > SHA256SUMS
-cat SHA256SUMS
-"#.trim()).shell("bash"),
+                Step::run("Prepare release", "bash scripts/release.sh").shell("bash"),
                 Step::run("Create GitHub Release", r#"
 gh release create "${{ github.ref_name }}" \
   --title "dodeca ${{ github.ref_name }}" \
@@ -582,7 +506,7 @@ use miette::Result;
 const GENERATED_HEADER: &str = "# GENERATED BY: cargo xtask ci\n# DO NOT EDIT - edit xtask/src/ci.rs instead\n\n";
 
 // =============================================================================
-// Shell installer script
+// Installer scripts
 // =============================================================================
 
 /// Generate the shell installer script content.
@@ -687,6 +611,110 @@ main() {{
 }}
 
 main "$@"
+"##, repo = repo)
+}
+
+/// Generate the PowerShell installer script content.
+pub fn generate_powershell_installer() -> String {
+    let repo = "bearcove/dodeca";
+
+    format!(r##"# Installer for dodeca
+# Usage: powershell -ExecutionPolicy Bypass -c "irm https://github.com/{repo}/releases/latest/download/dodeca-installer.ps1 | iex"
+
+$ErrorActionPreference = 'Stop'
+
+$REPO = "{repo}"
+
+function Get-Architecture {{
+    $arch = [System.Environment]::Is64BitOperatingSystem
+    if ($arch) {{
+        return "x86_64"
+    }} else {{
+        Write-Error "Only x64 architecture is supported on Windows"
+        exit 1
+    }}
+}}
+
+function Get-LatestVersion {{
+    try {{
+        $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/latest"
+        return $response.tag_name
+    }} catch {{
+        Write-Error "Failed to get latest version: $_"
+        exit 1
+    }}
+}}
+
+function Main {{
+    $arch = Get-Architecture
+    $version = if ($env:DODECA_VERSION) {{ $env:DODECA_VERSION }} else {{ Get-LatestVersion }}
+    $archiveName = "dodeca-x86_64-pc-windows-msvc.zip"
+    $url = "https://github.com/$REPO/releases/download/$version/$archiveName"
+
+    # Default install location
+    $installDir = if ($env:DODECA_INSTALL_DIR) {{
+        $env:DODECA_INSTALL_DIR
+    }} else {{
+        Join-Path $env:LOCALAPPDATA "dodeca"
+    }}
+
+    Write-Host "Installing dodeca $version for Windows x64..."
+    Write-Host "  Archive: $url"
+    Write-Host "  Install dir: $installDir"
+
+    # Create install directory
+    New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+    $pluginsDir = Join-Path $installDir "plugins"
+    New-Item -ItemType Directory -Force -Path $pluginsDir | Out-Null
+
+    # Download and extract
+    $tempDir = Join-Path $env:TEMP "dodeca-install-$(New-Guid)"
+    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+
+    try {{
+        Write-Host "Downloading..."
+        $archivePath = Join-Path $tempDir "archive.zip"
+        Invoke-WebRequest -Uri $url -OutFile $archivePath
+
+        Write-Host "Extracting..."
+        Expand-Archive -Path $archivePath -DestinationPath $tempDir -Force
+
+        Write-Host "Installing..."
+        Copy-Item -Path (Join-Path $tempDir "ddc.exe") -Destination $installDir -Force
+
+        $tempPluginsDir = Join-Path $tempDir "plugins"
+        if (Test-Path $tempPluginsDir) {{
+            Copy-Item -Path (Join-Path $tempPluginsDir "*") -Destination $pluginsDir -Force
+        }}
+
+        Write-Host ""
+        Write-Host "Successfully installed dodeca to $installDir\ddc.exe"
+        Write-Host ""
+
+        # Check if install_dir is in PATH
+        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        if ($userPath -notlike "*$installDir*") {{
+            Write-Host "NOTE: $installDir is not in your PATH."
+            Write-Host "Adding $installDir to your user PATH..."
+
+            try {{
+                $newPath = if ($userPath) {{ "$userPath;$installDir" }} else {{ $installDir }}
+                [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+                Write-Host "Successfully added to PATH. You may need to restart your terminal."
+            }} catch {{
+                Write-Host "Failed to add to PATH automatically. Please add it manually:"
+                Write-Host "  1. Open System Properties > Environment Variables"
+                Write-Host "  2. Add '$installDir' to your user PATH variable"
+            }}
+            Write-Host ""
+        }}
+    }} finally {{
+        # Cleanup
+        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }}
+}}
+
+Main
 "##, repo = repo)
 }
 
