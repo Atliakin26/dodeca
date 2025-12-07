@@ -39,13 +39,11 @@ weight = 40
 Any fenced Rust code block is automatically compiled and executed:
 
 ```rust
-use std::collections::HashMap;
-
 fn main() {
     let mut scores = HashMap::new();
     scores.insert("Alice", 10);
     scores.insert("Bob", 8);
-    
+
     for (name, score) in &scores {
         println!("{name}: {score}");
     }
@@ -56,7 +54,7 @@ fn main() {
 
 Code without a main function is automatically wrapped:
 
-```rust
+```rust,noexec
 let message = "Hello, world!";
 println!("{}", message);
 // This becomes fn main() { ... } automatically

@@ -7,9 +7,7 @@ use crate::db::{
 
 use crate::image::{self, InputFormat, OutputFormat, add_width_suffix};
 use crate::types::{HtmlBody, Route, SassContent, StaticPath, TemplateContent, Title};
-use crate::url_rewrite::{
-    ResponsiveImageInfo, rewrite_urls_in_css, rewrite_urls_in_html, transform_images_to_picture,
-};
+use crate::url_rewrite::rewrite_urls_in_css;
 use facet::Facet;
 use facet_value::Value;
 use pulldown_cmark::{Options, Parser, html};
@@ -805,6 +803,9 @@ pub fn process_image(db: &dyn Db, image_file: StaticFile) -> Option<ProcessedIma
 /// Build the complete site - THE top-level query
 /// This produces all output files that need to be written to disk.
 /// Fonts are automatically subsetted, all assets are cache-busted.
+///
+/// This reuses the same queries as the serve pipeline (serve_html, css_output,
+/// static_file_output) to ensure consistency between `ddc build` and `ddc serve`.
 #[salsa::tracked]
 pub fn build_site<'db>(
     db: &'db dyn Db,
@@ -814,78 +815,75 @@ pub fn build_site<'db>(
     static_files: StaticRegistry,
     data: DataRegistry,
 ) -> SiteOutput {
-    use crate::cache_bust::{cache_busted_path, content_hash};
+    let mut files = Vec::new();
 
-    // Build the site tree (tracked via Salsa)
+    // Build the site tree to get all routes
     let site_tree = build_tree(db, sources);
 
-    // --- Phase 1: Render HTML (need content for font analysis) ---
-    let mut html_outputs: Vec<(Route, String)> = Vec::new();
-
+    // --- Phase 1: Render all HTML pages using serve_html ---
+    // This reuses the exact same pipeline as `ddc serve`, ensuring consistency
     for route in site_tree.sections.keys() {
-        let rendered = render_section(db, route.clone(), sources, templates, data);
-        html_outputs.push((route.clone(), rendered.0));
+        if let Some(html) = serve_html(
+            db,
+            route.clone(),
+            sources,
+            templates,
+            sass,
+            static_files,
+            data,
+        ) {
+            files.push(OutputFile::Html {
+                route: route.clone(),
+                content: html,
+            });
+        }
     }
 
     for route in site_tree.pages.keys() {
-        let rendered = render_page(db, route.clone(), sources, templates, data);
-        html_outputs.push((route.clone(), rendered.0));
-    }
-
-    // --- Phase 2: Compile CSS ---
-    let sass_css = compile_sass(db, sass);
-    let sass_str = sass_css.as_ref().map(|c| c.0.as_str()).unwrap_or("");
-
-    // Collect CSS from static files
-    let mut static_css_parts = Vec::new();
-    for file in static_files.files(db) {
-        let path = file.path(db).as_str();
-        if path.to_lowercase().ends_with(".css") {
-            let content = load_static(db, *file);
-            if let Ok(css_str) = String::from_utf8(content) {
-                static_css_parts.push(css_str);
-            }
+        if let Some(html) = serve_html(
+            db,
+            route.clone(),
+            sources,
+            templates,
+            sass,
+            static_files,
+            data,
+        ) {
+            files.push(OutputFile::Html {
+                route: route.clone(),
+                content: html,
+            });
         }
     }
-    let static_css = static_css_parts.join("\n");
 
-    // --- Phase 3: Analyze fonts for subsetting ---
-    let html_refs: Vec<&str> = html_outputs.iter().map(|(_, h)| h.as_str()).collect();
-    let combined_html = html_refs.join("\n");
-    let inline_css = crate::plugins::extract_css_from_html_plugin(&combined_html);
-    let all_css = format!("{sass_str}\n{static_css}\n{inline_css}");
-    let font_analysis = crate::plugins::analyze_fonts_plugin(&combined_html, &all_css);
+    // --- Phase 2: Add CSS output ---
+    if let Some(css) = css_output(db, sources, templates, sass, static_files, data) {
+        files.push(OutputFile::Css {
+            path: StaticPath::new(css.cache_busted_path),
+            content: css.content,
+        });
+    }
 
-    // --- Phase 4: Process static files (with font subsetting and image transcoding) ---
-    // Maps original path (e.g., "fonts/Inter.woff2") to (new_path, content)
-    let mut static_outputs: HashMap<String, (String, Vec<u8>)> = HashMap::new();
-
-    // Track processed images for <img> -> <picture> transformation
-    let mut image_variants: HashMap<String, ResponsiveImageInfo> = HashMap::new();
-
+    // --- Phase 3: Process static files ---
     for file in static_files.files(db) {
         let path = file.path(db).as_str();
 
         // Check if this is a processable image (PNG, JPG, GIF, WebP, JXL)
         if InputFormat::is_processable(path) {
-            // Try to process the image into JXL and WebP variants at multiple widths
+            // Process the image into JXL and WebP variants at multiple widths
             if let Some(processed) = process_image(db, *file) {
                 use crate::cas::ImageVariantKey;
 
-                // Get input hash for deterministic URLs (same as serve_html)
                 let input_hash = image_input_hash(db, *file);
-                let mut jxl_srcset = Vec::new();
-                let mut webp_srcset = Vec::new();
 
-                // Process each JXL variant
+                // Output each JXL variant
                 for variant in &processed.jxl_variants {
                     let base_path = image::change_extension(path, OutputFormat::Jxl.extension());
                     let variant_path = if variant.width == processed.original_width {
-                        base_path // Original size, no suffix
+                        base_path
                     } else {
                         add_width_suffix(&base_path, variant.width)
                     };
-                    // Use input-based hash for URL (matches serve_html)
                     let key = ImageVariantKey {
                         input_hash,
                         format: OutputFormat::Jxl,
@@ -896,20 +894,20 @@ pub fn build_site<'db>(
                         variant_path.trim_end_matches(".jxl"),
                         key.url_hash()
                     );
-
-                    jxl_srcset.push((format!("/{cache_busted}"), variant.width));
-                    static_outputs.insert(variant_path, (cache_busted, variant.data.clone()));
+                    files.push(OutputFile::Static {
+                        path: StaticPath::new(cache_busted),
+                        content: variant.data.clone(),
+                    });
                 }
 
-                // Process each WebP variant
+                // Output each WebP variant
                 for variant in &processed.webp_variants {
                     let base_path = image::change_extension(path, OutputFormat::WebP.extension());
                     let variant_path = if variant.width == processed.original_width {
-                        base_path // Original size, no suffix
+                        base_path
                     } else {
                         add_width_suffix(&base_path, variant.width)
                     };
-                    // Use input-based hash for URL (matches serve_html)
                     let key = ImageVariantKey {
                         input_hash,
                         format: OutputFormat::WebP,
@@ -920,22 +918,11 @@ pub fn build_site<'db>(
                         variant_path.trim_end_matches(".webp"),
                         key.url_hash()
                     );
-
-                    webp_srcset.push((format!("/{cache_busted}"), variant.width));
-                    static_outputs.insert(variant_path, (cache_busted, variant.data.clone()));
+                    files.push(OutputFile::Static {
+                        path: StaticPath::new(cache_busted),
+                        content: variant.data.clone(),
+                    });
                 }
-
-                // Store the image info for HTML transformation
-                image_variants.insert(
-                    format!("/{path}"),
-                    ResponsiveImageInfo {
-                        jxl_srcset,
-                        webp_srcset,
-                        original_width: processed.original_width,
-                        original_height: processed.original_height,
-                        thumbhash_data_url: processed.thumbhash_data_url.clone(),
-                    },
-                );
 
                 // Don't output the original image (replaced by JXL/WebP)
                 continue;
@@ -943,94 +930,16 @@ pub fn build_site<'db>(
             // If processing failed, fall through to output the original
         }
 
-        // Get content (possibly subsetted for fonts, or optimized for SVGs)
-        let content = if is_font_file(path) {
-            if let Some(chars) = find_chars_for_font_file(path, &font_analysis) {
-                if !chars.is_empty() {
-                    let mut sorted_chars: Vec<char> = chars.into_iter().collect();
-                    sorted_chars.sort();
-                    let char_set = CharSet::new(db, sorted_chars);
-
-                    if let Some(subsetted) = subset_font(db, *file, char_set) {
-                        subsetted
-                    } else {
-                        load_static(db, *file)
-                    }
-                } else {
-                    load_static(db, *file)
-                }
-            } else {
-                load_static(db, *file)
-            }
-        } else if path.to_lowercase().ends_with(".svg") {
-            // Process SVG files
-            optimize_svg(db, *file)
-        } else {
-            load_static(db, *file)
-        };
-
-        // Hash content and generate cache-busted path
-        let hash = content_hash(&content);
-        let new_path = cache_busted_path(path, &hash);
-
-        static_outputs.insert(path.to_string(), (new_path, content));
-    }
-
-    // Build path rewrite map: "/fonts/Inter.woff2" -> "/fonts/Inter.a1b2c3d4.woff2"
-    let static_path_map: HashMap<String, String> = static_outputs
-        .iter()
-        .map(|(old, (new, _))| (format!("/{old}"), format!("/{new}")))
-        .collect();
-
-    // --- Phase 5: Rewrite CSS and hash it ---
-    let (css_path, css_final) = if let Some(ref css) = sass_css {
-        let rewritten_css = rewrite_urls_in_css(&css.0, &static_path_map);
-        let css_hash = content_hash(rewritten_css.as_bytes());
-        let css_path = cache_busted_path("main.css", &css_hash);
-        (Some(css_path), Some(rewritten_css))
-    } else {
-        (None, None)
-    };
-
-    // Add CSS to path map for HTML rewriting
-    let mut all_path_map = static_path_map;
-    if let Some(ref path) = css_path {
-        all_path_map.insert("/main.css".to_string(), format!("/{path}"));
-    }
-
-    // --- Phase 6: Rewrite HTML ---
-    // First rewrite URLs, then transform <img> to <picture> for responsive images
-    let mut files = Vec::new();
-
-    for (route, html) in html_outputs {
-        // First pass: rewrite asset URLs (CSS, fonts, etc.)
-        let rewritten_html = rewrite_urls_in_html(&html, &all_path_map);
-        // Second pass: transform <img> tags pointing to internal images into <picture> elements
-        let transformed_html = transform_images_to_picture(&rewritten_html, &image_variants);
-        // Third pass: minify HTML
-        let final_html = crate::svg::minify_html(&transformed_html);
-        files.push(OutputFile::Html {
-            route,
-            content: final_html,
-        });
-    }
-
-    // --- Phase 7: Add CSS and static files to output ---
-    if let (Some(path), Some(content)) = (css_path, css_final) {
-        files.push(OutputFile::Css {
-            path: StaticPath::new(path),
-            content,
-        });
-    }
-
-    for (new_path, content) in static_outputs.into_values() {
+        // Use static_file_output for all other static files (fonts, CSS, SVGs, etc.)
+        // This handles font subsetting, CSS URL rewriting, and SVG optimization
+        let output = static_file_output(db, *file, sources, templates, sass, static_files, data);
         files.push(OutputFile::Static {
-            path: StaticPath::new(new_path),
-            content,
+            path: StaticPath::new(output.cache_busted_path),
+            content: output.content,
         });
     }
 
-    // --- Phase 8: Execute code samples for validation ---
+    // --- Phase 4: Execute code samples for validation ---
     let code_execution_results = execute_all_code_samples(db, sources);
 
     SiteOutput {
