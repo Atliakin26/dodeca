@@ -16,11 +16,12 @@ tokio = { version = "1", features = ["full"] }
 # WebSocket
 futures-util = "0.3"
 
-# RPC framework - testkit provides RpcSession with tunnel support
+# RPC framework - using SHM for zero-copy communication
 rapace = { git = "https://github.com/bearcove/rapace" }
 rapace-core = { git = "https://github.com/bearcove/rapace" }
 rapace-testkit = { git = "https://github.com/bearcove/rapace" }
 rapace-registry = { git = "https://github.com/bearcove/rapace" }
+rapace-transport-shm = { git = "https://github.com/bearcove/rapace" }
 dodeca-serve-protocol = { path = "../dodeca-serve-protocol" }
 
 # Devtools protocol (for WebSocket messages)

@@ -13,7 +13,7 @@ There are currently two plugin systems:
 | System | Type | Communication | Status |
 |--------|------|---------------|--------|
 | **Plugcard** | Dynamic library (.so/.dylib/.dll) | Serialized method calls | Legacy, being phased out |
-| **Rapace** | Subprocess binary | Unix socket RPC | Active development |
+| **Rapace** | Subprocess binary | Shared memory (zero-copy) | Active development |
 
 All plugins are being migrated to **rapace**.
 
@@ -170,14 +170,15 @@ This ensures type-safe dispatch: if schemas change, keys change.
 
 ## Rapace (Recommended)
 
-Rapace plugins are standalone executables that communicate with the host via Unix socket RPC using the [rapace](https://github.com/bearcove/rapace) framework.
+Rapace plugins are standalone executables that communicate with the host via shared memory (SHM) using the [rapace](https://github.com/bearcove/rapace) framework. The SHM transport enables zero-copy data transfer between the host and plugin processes.
 
 ### Benefits
 
+- **Zero-copy performance** - Content transfers directly through shared memory without copying
 - **Process isolation** - Plugins run in separate processes, improving stability
-- **Language flexibility** - Any language that can speak the protocol works
+- **Bidirectional RPC** - Both host and plugin can initiate calls (via `RpcSession`)
+- **TCP tunneling** - Browser connections are accepted by host and tunneled through to plugin
 - **Async support** - Full async/await with independent runtimes per plugin
-- **Hot reload potential** - Easier to restart individual plugins
 
 ### Current Rapace Plugins
 
@@ -186,42 +187,50 @@ Rapace plugins are standalone executables that communicate with the host via Uni
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Core dodeca                             │
-│  ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────────────┐   │
-│  │  Salsa  │ │Markdown │ │ Template │ │  Plugin Host    │   │
-│  │(queries)│ │ Parser  │ │  Engine  │ │ (rapace server) │   │
-│  └─────────┘ └─────────┘ └──────────┘ └────────┬────────┘   │
-└────────────────────────────────────────────────┼────────────┘
-                                                 │ Unix socket
-                                                 ▼
-                              ┌─────────────────────────────┐
-                              │    dodeca-mod-http          │
-                              │   (axum HTTP server)        │
-                              │   - serves HTTP requests    │
-                              │   - WebSocket for devtools  │
-                              │   - calls back to host      │
-                              └─────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                          Core dodeca                                  │
+│  ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────────────────────────┐│
+│  │  Salsa  │ │Markdown │ │ Template │ │      Plugin Host            ││
+│  │(queries)│ │ Parser  │ │  Engine  │ │  - TCP listener (browsers)  ││
+│  └─────────┘ └─────────┘ └──────────┘ │  - RpcSession + dispatcher  ││
+│                                        │  - ContentService impl      ││
+│                                        └──────────────┬──────────────┘│
+└───────────────────────────────────────────────────────┼───────────────┘
+                                                        │ SHM (zero-copy)
+                                                        ▼
+                               ┌─────────────────────────────────────┐
+                               │        dodeca-mod-http              │
+                               │   - Internal axum HTTP server       │
+                               │   - TcpTunnel service (host→plugin) │
+                               │   - ContentService client (plugin→host)│
+                               │   - WebSocket for devtools          │
+                               └─────────────────────────────────────┘
 ```
 
 ### Communication Flow
 
-The plugin connects to the host via Unix socket and makes RPC calls:
+Host and plugin communicate bidirectionally via shared memory:
 
 ```
-Plugin (dodeca-mod-http)              Host (dodeca)
-         │                                  │
-         │── connect to socket ────────────▶│
-         │                                  │
-         │── find_content("/foo") ─────────▶│
-         │                                  │ (queries Salsa DB)
-         │◀── ServeContent::Html {...} ─────│
-         │                                  │
-         │── open_ws_tunnel() ─────────────▶│
-         │                                  │ (creates tunnel)
-         │◀── tunnel_id ────────────────────│
-         │                                  │
+Browser                Host (dodeca)                Plugin (dodeca-mod-http)
+   │                        │                                │
+   │── TCP connect ────────▶│                                │
+   │                        │── TcpTunnel.open() ───────────▶│
+   │                        │◀── tunnel handle ──────────────│
+   │                        │                                │
+   │── HTTP request ───────▶│── tunnel chunk ───────────────▶│
+   │                        │                                │ (internal axum)
+   │                        │                                │
+   │                        │◀── find_content("/foo") ───────│
+   │                        │ (queries Salsa DB)             │
+   │                        │── ServeContent::Html {...} ───▶│
+   │                        │                                │
+   │                        │◀── tunnel response chunk ──────│
+   │◀── HTTP response ──────│                                │
+   │                        │                                │
 ```
+
+The host accepts browser TCP connections and tunnels them through to the plugin via `TcpTunnel`. The plugin processes HTTP requests internally and calls back to the host for content via `ContentService`.
 
 ### Protocol Definition
 

@@ -7,6 +7,8 @@
 //! Browser → Host (TCP) → rapace tunnel → Plugin → internal axum
 //!                                              ↓
 //!                              ContentService RPC → Host (Salsa DB)
+//!                                    ↑
+//!                          (zero-copy via SHM)
 //! ```
 //!
 //! The plugin:
@@ -14,15 +16,14 @@
 //! - Implements TcpTunnel service (host opens tunnels for each browser connection)
 //! - Calls ContentService on host for all content (HTML, CSS, static files)
 //! - Opens WebSocketTunnel to host for devtools (just pipes bytes)
+//! - Uses SHM transport for zero-copy content transfer
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use color_eyre::Result;
-use rapace::StreamTransport;
 use rapace_testkit::RpcSession;
-use tokio::io::{ReadHalf, WriteHalf};
-use tokio::net::UnixStream;
+use rapace_transport_shm::{ShmSession, ShmSessionConfig, ShmTransport};
 
 use dodeca_serve_protocol::{
     ContentServiceClient,
@@ -32,8 +33,8 @@ use dodeca_serve_protocol::{
 mod devtools;
 mod tunnel;
 
-/// Type alias for our transport
-type PluginTransport = StreamTransport<ReadHalf<UnixStream>, WriteHalf<UnixStream>>;
+/// Type alias for our transport (SHM-based for zero-copy)
+type PluginTransport = ShmTransport;
 
 /// Plugin context shared across HTTP handlers
 pub struct PluginContext {
@@ -53,24 +54,31 @@ impl PluginContext {
     }
 }
 
+/// SHM configuration - must match host's config
+const SHM_CONFIG: ShmSessionConfig = ShmSessionConfig {
+    ring_capacity: 256,    // 256 descriptors in flight
+    slot_size: 65536,      // 64KB per slot (fits most HTML pages)
+    slot_count: 128,       // 128 slots = 8MB total
+};
+
 /// CLI arguments
 struct Args {
-    /// Unix socket path to connect to host
-    host_socket: PathBuf,
+    /// SHM file path for zero-copy communication with host
+    shm_path: PathBuf,
 }
 
 fn parse_args() -> Result<Args> {
-    let mut host_socket = None;
+    let mut shm_path = None;
 
     for arg in std::env::args().skip(1) {
-        if let Some(value) = arg.strip_prefix("--host-socket=") {
-            host_socket = Some(PathBuf::from(value));
+        if let Some(value) = arg.strip_prefix("--shm-path=") {
+            shm_path = Some(PathBuf::from(value));
         }
         // Note: --bind is no longer used - host does the TCP binding
     }
 
     Ok(Args {
-        host_socket: host_socket.ok_or_else(|| color_eyre::eyre::eyre!("--host-socket required"))?,
+        shm_path: shm_path.ok_or_else(|| color_eyre::eyre::eyre!("--shm-path required"))?,
     })
 }
 
@@ -87,15 +95,29 @@ async fn main() -> Result<()> {
         .init();
 
     let args = parse_args()?;
-    tracing::info!("Connecting to host: {}", args.host_socket.display());
+    tracing::info!("Opening SHM: {}", args.shm_path.display());
 
-    // Connect to host via Unix socket
-    let stream = UnixStream::connect(&args.host_socket).await?;
-    tracing::info!("Connected to host");
+    // Wait for the host to create the SHM file
+    for i in 0..50 {
+        if args.shm_path.exists() {
+            break;
+        }
+        if i == 49 {
+            return Err(color_eyre::eyre::eyre!(
+                "SHM file not created by host: {}",
+                args.shm_path.display()
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 
-    // Create rapace stream transport wrapped in RpcSession
-    let transport: PluginTransport = StreamTransport::new(stream);
-    let transport = Arc::new(transport);
+    // Open the SHM session (plugin side)
+    let session = ShmSession::open_file(&args.shm_path, SHM_CONFIG)
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to open SHM: {:?}", e))?;
+    tracing::info!("Connected to host via SHM");
+
+    // Create SHM transport
+    let transport: Arc<PluginTransport> = Arc::new(ShmTransport::new(session));
 
     // Plugin uses even channel IDs (2, 4, 6, ...)
     // Host uses odd channel IDs (1, 3, 5, ...)

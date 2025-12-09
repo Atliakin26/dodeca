@@ -95,6 +95,8 @@ dodeca-serve-protocol = { path = "../dodeca-serve-protocol" }
 
 # RPC framework for plugin communication
 rapace = { git = "https://github.com/bearcove/rapace", features = ["stream"] }
+rapace-testkit = { git = "https://github.com/bearcove/rapace" }
+rapace-transport-shm = { git = "https://github.com/bearcove/rapace" }
 
 # Code execution plugin types (lightweight - no plugin implementation)
 dodeca-code-execution-types = { path = "../dodeca-code-execution-types" }

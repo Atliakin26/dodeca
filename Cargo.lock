@@ -2458,6 +2458,8 @@ dependencies = [
  "postcard",
  "pulldown-cmark",
  "rapace",
+ "rapace-testkit",
+ "rapace-transport-shm",
  "rapidhash",
  "ratatui",
  "rayon",
@@ -2649,6 +2651,7 @@ dependencies = [
  "rapace-core",
  "rapace-registry",
  "rapace-testkit",
+ "rapace-transport-shm",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -7224,6 +7227,17 @@ name = "rapace-transport-mem"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "parking_lot",
+ "rapace-core",
+ "tokio",
+]
+
+[[package]]
+name = "rapace-transport-shm"
+version = "0.1.0"
+source = "git+https://github.com/bearcove/rapace#5c6ed2acd8166e6a9547bc89429dfdcf3b87bb1b"
+dependencies = [
+ "libc",
  "parking_lot",
  "rapace-core",
  "tokio",

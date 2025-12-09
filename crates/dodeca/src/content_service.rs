@@ -11,6 +11,7 @@ use dodeca_serve_protocol::{ContentService, ServeContent};
 use crate::serve::{SiteServer, get_devtools_asset, get_search_file_content};
 
 /// ContentService implementation that wraps SiteServer
+#[derive(Clone)]
 pub struct HostContentService {
     server: Arc<SiteServer>,
 }
