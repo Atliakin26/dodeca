@@ -52,6 +52,19 @@ mkdir -p staging/plugins
 # Copy binary
 cp "target/${TARGET}/release/${BINARY_NAME}" staging/
 
+# Copy dodeca-mod-http (rapace plugin binary)
+if [[ "$TARGET" == *windows* ]]; then
+    MOD_HTTP_NAME="dodeca-mod-http.exe"
+else
+    MOD_HTTP_NAME="dodeca-mod-http"
+fi
+if [[ -f "target/${TARGET}/release/${MOD_HTTP_NAME}" ]]; then
+    cp "target/${TARGET}/release/${MOD_HTTP_NAME}" staging/
+    echo "Copied rapace plugin: ${MOD_HTTP_NAME}"
+else
+    echo "Warning: dodeca-mod-http not found: target/${TARGET}/release/${MOD_HTTP_NAME}"
+fi
+
 # Copy plugins
 for plugin in "${PLUGINS[@]}"; do
     PLUGIN_FILE="${LIB_PREFIX}${plugin}.${LIB_EXT}"

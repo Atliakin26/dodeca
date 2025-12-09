@@ -277,7 +277,7 @@ impl Plugin {
         let output_bytes =
             self.call_raw_with_callbacks(method.key, &input_bytes, log_callback, host_callback)?;
 
-        crate::facet_postcard::from_bytes(&output_bytes).map_err(|_| CallError::DeserializeError)
+        crate::facet_postcard::from_slice(&output_bytes).map_err(|_| CallError::DeserializeError)
     }
 }
 
@@ -303,7 +303,7 @@ impl std::fmt::Display for CallError {
             CallError::DeserializeError => write!(f, "failed to deserialize"),
             CallError::MethodError(data) => {
                 // Try to deserialize as String for nice error messages
-                if let Ok(msg) = crate::facet_postcard::from_bytes::<String>(data) {
+                if let Ok(msg) = crate::facet_postcard::from_slice::<String>(data) {
                     write!(f, "method error: {msg}")
                 } else {
                     write!(f, "method error: {} bytes", data.len())

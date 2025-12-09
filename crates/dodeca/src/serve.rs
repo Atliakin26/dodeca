@@ -1326,7 +1326,7 @@ async fn handle_devtools_socket(socket: WebSocket, server: Arc<SiteServer>) {
                     }
                     Some(Ok(Message::Binary(data))) => {
                         // Binary messages are devtools protocol messages
-                        if let Ok(msg) = facet_postcard::from_bytes::<ClientMessage>(&data) {
+                        if let Ok(msg) = facet_postcard::from_slice::<ClientMessage>(&data) {
                             match msg {
                                 ClientMessage::Route { path } => {
                                     tracing::info!("Browser viewing {}", path);

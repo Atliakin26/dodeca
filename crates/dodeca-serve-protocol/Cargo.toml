@@ -24,3 +24,6 @@ rapace-testkit = { git = "https://github.com/bearcove/rapace" }
 
 # Re-export types from dodeca-protocol
 dodeca-protocol = { path = "../dodeca-protocol" }
+
+# Tracing is used by rapace macro-generated code (::tracing:: paths in generated code)
+tracing = "0.1"

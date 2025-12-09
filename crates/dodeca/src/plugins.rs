@@ -52,7 +52,7 @@ extern "C" fn host_service_callback(data: *mut HostCallData) {
 fn handle_highlight_code(data: &mut HostCallData) {
     // Deserialize input
     let input_slice = unsafe { std::slice::from_raw_parts(data.input_ptr, data.input_len) };
-    let request: HighlightRequest = match plugcard::facet_postcard::from_bytes(input_slice) {
+    let request: HighlightRequest = match plugcard::facet_postcard::from_slice(input_slice) {
         Ok(r) => r,
         Err(_) => {
             data.result = HostCallResult::DeserializeError;

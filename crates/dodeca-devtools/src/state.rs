@@ -144,7 +144,7 @@ pub async fn connect_websocket(mut state: Signal<DevtoolsState>) -> Result<(), S
         if let Ok(buffer) = data.dyn_into::<js_sys::ArrayBuffer>() {
             let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
 
-            match facet_postcard::from_bytes::<ServerMessage>(&bytes) {
+            match facet_postcard::from_slice::<ServerMessage>(&bytes) {
                 Ok(msg) => handle_server_message(state_clone, msg),
                 Err(e) => tracing::warn!("[devtools] failed to parse server message: {:?}", e),
             }

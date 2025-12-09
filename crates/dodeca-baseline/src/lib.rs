@@ -69,7 +69,7 @@ mod tests {
 
         // Deserialize output
         let output: String =
-            plugcard::facet_postcard::from_bytes(&output_buf[..data.output_len]).unwrap();
+            plugcard::facet_postcard::from_slice(&output_buf[..data.output_len]).unwrap();
         assert_eq!(output, "olleh");
     }
 
@@ -109,7 +109,7 @@ mod tests {
 
         // Deserialize output
         let output: i32 =
-            plugcard::facet_postcard::from_bytes(&output_buf[..data.output_len]).unwrap();
+            plugcard::facet_postcard::from_slice(&output_buf[..data.output_len]).unwrap();
         assert_eq!(output, 8);
     }
 }

@@ -24,9 +24,9 @@ if [[ "$TARGET" == "aarch64-unknown-linux-gnu" ]]; then
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 fi
 
-# Build ddc
-echo "Building ddc..."
-cargo build --release --target "$TARGET" -p dodeca
+# Build ddc and dodeca-mod-http (rapace plugin binary)
+echo "Building ddc and dodeca-mod-http..."
+cargo build --release --target "$TARGET" -p dodeca -p dodeca-mod-http
 
 # Build plugins
 echo "Building plugins..."

@@ -472,7 +472,7 @@ where
         match data.result {
             HostCallResult::Success => {
                 output.truncate(data.output_len);
-                return facet_postcard::from_bytes(&output)
+                return facet_postcard::from_slice(&output)
                     .map_err(|_| HostCallError::DeserializeError);
             }
             HostCallResult::BufferTooSmall => {

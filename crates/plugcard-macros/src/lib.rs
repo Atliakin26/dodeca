@@ -188,7 +188,7 @@ fn plugcard_impl(item: proc_macro2::TokenStream) -> std::result::Result<proc_mac
 
                 // Deserialize input using facet-postcard
                 let input_slice = ::core::slice::from_raw_parts(data.input_ptr, data.input_len);
-                let input: #input_type_name = match ::plugcard::facet_postcard::from_bytes(input_slice) {
+                let input: #input_type_name = match ::plugcard::facet_postcard::from_slice(input_slice) {
                     Ok(v) => v,
                     Err(_) => {
                         ::plugcard::set_log_callback(prev_log_callback);

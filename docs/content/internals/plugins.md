@@ -1,23 +1,41 @@
 +++
 title = "Plugins"
-description = "Dynamic library plugin system with serialized method calls"
+description = "Plugin systems for extending dodeca functionality"
 weight = 50
 +++
 
-A dynamic library plugin system for Rust, inspired by [postcard-rpc](https://github.com/jamesmunns/postcard-rpc).
+## Introduction
 
-## Overview
+Dodeca uses plugins to keep the core binary small and fast to link. Heavy dependencies live in plugins, which compile and link independently.
 
-Plugcard allows you to expose Rust functions as plugin methods that can be called across dynamic library boundaries. It handles:
+There are currently two plugin systems:
 
-- **Serialization** - Input/output automatically serialized via [postcard](https://docs.rs/postcard)
-- **Schema introspection** - Methods carry type schemas for validation
-- **Auto-registration** - Methods register themselves via [linkme](https://docs.rs/linkme) distributed slices
-- **FFI safety** - Clean C-compatible interface across the boundary
+| System | Type | Communication | Status |
+|--------|------|---------------|--------|
+| **Plugcard** | Dynamic library (.so/.dylib/.dll) | Serialized method calls | Legacy, being phased out |
+| **Rapace** | Subprocess binary | Unix socket RPC | Active development |
 
-## Quick Start
+All plugins are being migrated to **rapace**.
 
-### 1. Add dependencies
+---
+
+## Plugcard (Legacy)
+
+A dynamic library plugin system inspired by [postcard-rpc](https://github.com/jamesmunns/postcard-rpc).
+
+Plugcard plugins are dynamic libraries loaded into the main process. They use serialized method calls across the FFI boundary.
+
+### How It Works
+
+The `#[plugcard]` attribute macro transforms your function into a plugin method:
+
+1. **Input struct** - Arguments are bundled into a generated struct with serde derives
+2. **FFI wrapper** - An `extern "C"` function that deserializes input, calls your function, serializes output
+3. **Registration** - A static `MethodSignature` is registered in a distributed slice
+
+### Quick Start
+
+Add dependencies:
 
 ```toml
 [dependencies]
@@ -29,7 +47,7 @@ postcard-schema = { version = "0.1", features = ["derive", "alloc"] }
 crate-type = ["cdylib", "rlib"]
 ```
 
-### 2. Mark functions with `#[plugcard]`
+Mark functions with `#[plugcard]`:
 
 ```rust,noexec
 use plugcard::plugcard;
@@ -45,15 +63,7 @@ pub fn add(a: i32, b: i32) -> i32 {
 }
 ```
 
-That's it! The macro generates all the FFI wrappers and registration code.
-
-## How It Works
-
-The `#[plugcard]` attribute macro transforms your function into a plugin method:
-
-1. **Input struct** - Arguments are bundled into a generated struct with serde derives
-2. **FFI wrapper** - An `extern "C"` function that deserializes input, calls your function, serializes output
-3. **Registration** - A static `MethodSignature` is registered in a distributed slice
+The macro generates all FFI wrappers and registration code.
 
 ### Generated Code
 
@@ -97,9 +107,9 @@ static __PLUGCARD_SIG_add: MethodSignature = MethodSignature {
 };
 ```
 
-## API Reference
+### API Reference
 
-### `MethodSignature`
+#### `MethodSignature`
 
 ```rust,noexec
 pub struct MethodSignature {
@@ -111,7 +121,7 @@ pub struct MethodSignature {
 }
 ```
 
-### `MethodCallData`
+#### `MethodCallData`
 
 The FFI boundary structure:
 
@@ -128,7 +138,7 @@ pub struct MethodCallData {
 }
 ```
 
-### `MethodCallResult`
+#### `MethodCallResult`
 
 ```rust,noexec
 #[repr(C)]
@@ -141,55 +151,7 @@ pub enum MethodCallResult {
 }
 ```
 
-### Introspection Functions
-
-```rust,noexec
-// Find a method by its computed key
-pub fn find_method(key: u64) -> Option<&'static MethodSignature>
-
-// List all registered methods
-pub fn list_methods() -> &'static [MethodSignature]
-
-// Dispatch a call by key
-pub unsafe fn dispatch(data: *mut MethodCallData)
-```
-
-## Calling a Plugin Method
-
-```rust,noexec
-use plugcard::{list_methods, MethodCallData, MethodCallResult};
-
-// Find the method
-let methods = list_methods();
-let add = methods.iter().find(|m| m.name == "add").unwrap();
-
-// Prepare input (must match the generated input struct layout)
-#[derive(Serialize)]
-struct Input { a: i32, b: i32 }
-let input_bytes = postcard::to_allocvec(&Input { a: 2, b: 3 }).unwrap();
-
-// Prepare output buffer
-let mut output_buf = [0u8; 256];
-let mut data = MethodCallData {
-    key: add.key,
-    input_ptr: input_bytes.as_ptr(),
-    input_len: input_bytes.len(),
-    output_ptr: output_buf.as_mut_ptr(),
-    output_cap: output_buf.len(),
-    output_len: 0,
-    result: MethodCallResult::default(),
-};
-
-// Call
-unsafe { (add.call)(&mut data) };
-
-// Check result
-assert_eq!(data.result, MethodCallResult::Success);
-let result: i32 = postcard::from_bytes(&output_buf[..data.output_len]).unwrap();
-assert_eq!(result, 5);
-```
-
-## Method Keys
+### Method Keys
 
 Method keys are computed at compile time using FNV-1a hash of:
 - Method name
@@ -198,15 +160,101 @@ Method keys are computed at compile time using FNV-1a hash of:
 
 This ensures type-safe dispatch: if schemas change, keys change.
 
-## Crate Structure
+### Crate Structure
 
 - **plugcard** - Core types and runtime
 - **plugcard-macros** - The `#[plugcard]` proc macro (uses [unsynn](https://docs.rs/unsynn) for parsing)
 - **dodeca-baseline** - Example plugin with test functions
 
+---
+
+## Rapace (Recommended)
+
+Rapace plugins are standalone executables that communicate with the host via Unix socket RPC using the [rapace](https://github.com/bearcove/rapace) framework.
+
+### Benefits
+
+- **Process isolation** - Plugins run in separate processes, improving stability
+- **Language flexibility** - Any language that can speak the protocol works
+- **Async support** - Full async/await with independent runtimes per plugin
+- **Hot reload potential** - Easier to restart individual plugins
+
+### Current Rapace Plugins
+
+- `dodeca-mod-http` - HTTP dev server with WebSocket support for live reload
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Core dodeca                             │
+│  ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────────────┐   │
+│  │  Salsa  │ │Markdown │ │ Template │ │  Plugin Host    │   │
+│  │(queries)│ │ Parser  │ │  Engine  │ │ (rapace server) │   │
+│  └─────────┘ └─────────┘ └──────────┘ └────────┬────────┘   │
+└────────────────────────────────────────────────┼────────────┘
+                                                 │ Unix socket
+                                                 ▼
+                              ┌─────────────────────────────┐
+                              │    dodeca-mod-http          │
+                              │   (axum HTTP server)        │
+                              │   - serves HTTP requests    │
+                              │   - WebSocket for devtools  │
+                              │   - calls back to host      │
+                              └─────────────────────────────┘
+```
+
+### Communication Flow
+
+The plugin connects to the host via Unix socket and makes RPC calls:
+
+```
+Plugin (dodeca-mod-http)              Host (dodeca)
+         │                                  │
+         │── connect to socket ────────────▶│
+         │                                  │
+         │── find_content("/foo") ─────────▶│
+         │                                  │ (queries Salsa DB)
+         │◀── ServeContent::Html {...} ─────│
+         │                                  │
+         │── open_ws_tunnel() ─────────────▶│
+         │                                  │ (creates tunnel)
+         │◀── tunnel_id ────────────────────│
+         │                                  │
+```
+
+### Protocol Definition
+
+Rapace plugins use trait-based protocol definitions with the `#[rapace::service]` macro:
+
+```rust,noexec
+#[rapace::service]
+pub trait ContentService {
+    async fn find_content(&self, path: String) -> ServeContent;
+    async fn get_scope(&self, route: String, path: Vec<String>) -> Vec<ScopeEntry>;
+    async fn eval_expression(&self, route: String, expression: String) -> EvalResult;
+    async fn open_ws_tunnel(&self) -> u64;
+}
+```
+
+The macro generates:
+- Client types for making RPC calls
+- Server types for handling RPC calls
+- Serialization/deserialization code
+
+### Creating a Rapace Plugin
+
+1. Define the protocol in a shared crate (e.g., `dodeca-serve-protocol`)
+2. Implement the server side in the host
+3. Create the plugin binary that connects and uses the client
+
+See `crates/dodeca-mod-http/` for a complete example.
+
+---
+
 ## Why Plugins?
 
-The primary motivation is **link speed**. Rust's incremental compilation is fast, but linking a large binary with many dependencies is slow. By moving functionality into dynamic libraries:
+The primary motivation is **link speed**. Rust's incremental compilation is fast, but linking a large binary with many dependencies is slow. By moving functionality into plugins:
 
 - The main `dodeca` binary stays small and links fast
 - Plugins compile and link independently
@@ -215,56 +263,13 @@ The primary motivation is **link speed**. Rust's incremental compilation is fast
 
 This dramatically improves iteration speed during development.
 
-## Future Architecture
+## Future Plans
 
-The goal is to move most heavy dependencies into plugins:
+More functionality will move to rapace plugins:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Core dodeca                             │
-│  ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────────────┐   │
-│  │  Salsa  │ │Markdown │ │ Template │ │  Plugin Host    │   │
-│  │(queries)│ │ Parser  │ │  Engine  │ │(JSON-RPC async) │   │
-│  └─────────┘ └─────────┘ └──────────┘ └────────┬────────┘   │
-└────────────────────────────────────────────────┼────────────┘
-                                                 │
-              ┌──────────────────────────────────┼──────────────────────────────────┐
-              │                                  │                                  │
-              ▼                                  ▼                                  ▼
-┌─────────────────────────┐    ┌─────────────────────────┐    ┌─────────────────────────┐
-│    http-server plugin   │    │   http-client plugin    │    │     search plugin       │
-│        (axum)           │    │       (reqwest)         │    │  (replaces pagefind)    │
-└─────────────────────────┘    └────────────┬────────────┘    └─────────────────────────┘
-                                            │
-                                            ▼
-                               ┌─────────────────────────┐
-                               │   link-checker plugin   │
-                               │ (uses http-client msgs) │
-                               └─────────────────────────┘
+- `http-client` - For link checking and external fetches
+- `search` - Full-text search indexing (replacing pagefind)
+- `image-processing` - Image optimization and conversion
+- `font-subsetting` - Web font optimization
 
-┌─────────────────────────┐    ┌─────────────────────────┐    ┌─────────────────────────┐
-│  font-subsetting plugin │    │  image-processing plugin│    │      tui plugin         │
-│      (fontcull)         │    │        (image)          │    │      (ratatui)          │
-└─────────────────────────┘    └─────────────────────────┘    └─────────────────────────┘
-```
-
-### Async Plugin Support
-
-Plugins can perform async operations via message-passing (JSON-RPC style):
-
-```
-Plugin                              Host
-   │                                  │
-   │── request { id: 1, ... } ───────▶│
-   │                                  │ (host performs async I/O)
-   │◀── response { id: 1, ... } ──────│
-   │                                  │
-```
-
-Each plugin has its own runtime if needed. No shared tokio runtime complexity.
-
-### Plugin Dependencies
-
-Plugins can depend on each other through the message-passing system. For example, the link-checker plugin doesn't bundle its own HTTP client—it sends requests that get routed to the http-client plugin.
-
-This keeps each plugin focused and avoids duplicating dependencies across plugins.
+Plugins can depend on each other through the message-passing system, keeping each focused and avoiding duplicated dependencies.

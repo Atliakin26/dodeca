@@ -25,7 +25,7 @@ fn test_patch_serialization_compatibility() {
     // Patches are now sent as ServerMessage::Patches
     let msg = ServerMessage::Patches(patches.clone());
     let serialized = facet_postcard::to_vec(&msg).unwrap();
-    let deserialized: ServerMessage = facet_postcard::from_bytes(&serialized).unwrap();
+    let deserialized: ServerMessage = facet_postcard::from_slice(&serialized).unwrap();
 
     match deserialized {
         ServerMessage::Patches(p) => assert_eq!(patches, p),
@@ -49,7 +49,7 @@ fn test_all_patch_types_serialize() {
 
     let msg = ServerMessage::Patches(patches.clone());
     let serialized = facet_postcard::to_vec(&msg).unwrap();
-    let deserialized: ServerMessage = facet_postcard::from_bytes(&serialized).unwrap();
+    let deserialized: ServerMessage = facet_postcard::from_slice(&serialized).unwrap();
 
     match deserialized {
         ServerMessage::Patches(p) => assert_eq!(patches, p),
