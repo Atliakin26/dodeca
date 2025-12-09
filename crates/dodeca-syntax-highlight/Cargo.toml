@@ -16,4 +16,30 @@ facet = { git = "https://github.com/facet-rs/facet" }
 linkme = "0.3"
 
 # Syntax highlighting with tree-sitter
-arborium = { path = "../../../arborium/crates/arborium", features = ["all-languages"] }
+arborium = { version = "0.700", features = [
+    "lang-bash",
+    "lang-c",
+    "lang-cpp",
+    "lang-css",
+    "lang-dockerfile",
+    "lang-go",
+    "lang-haskell",
+    "lang-html",
+    "lang-java",
+    "lang-javascript",
+    "lang-json",
+    "lang-kdl",
+    "lang-kotlin",
+    "lang-lua",
+    "lang-markdown",
+    "lang-python",
+    "lang-ruby",
+    "lang-rust",
+    "lang-scala",
+    "lang-sql",
+    "lang-swift",
+    "lang-toml",
+    "lang-typescript",
+    "lang-yaml",
+    "lang-zig",
+] }

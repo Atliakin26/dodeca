@@ -46,3 +46,9 @@ opt-level = 1
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# Patch arborium crates to use git version with bugfix
+[patch.crates-io]
+arborium-highlight = { git = "https://github.com/bearcove/arborium" }
+arborium-tree-sitter = { git = "https://github.com/bearcove/arborium" }
+arborium-sysroot = { git = "https://github.com/bearcove/arborium" }
