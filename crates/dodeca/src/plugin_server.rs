@@ -203,10 +203,14 @@ pub fn find_plugin_path() -> Result<PathBuf> {
 /// 4. Listens for browser TCP connections and tunnels them to the plugin
 ///
 /// If `shutdown_rx` is provided, the server will stop when the signal is received.
+///
+/// The `bind_ips` parameter specifies which IP addresses to bind to. This allows
+/// binding to specific LAN interfaces without exposing the server on WAN interfaces.
 pub async fn start_plugin_server_with_shutdown(
     server: Arc<SiteServer>,
     plugin_path: PathBuf,
-    bind_addr: std::net::SocketAddr,
+    bind_ips: Vec<std::net::Ipv4Addr>,
+    port: u16,
     mut shutdown_rx: Option<watch::Receiver<bool>>,
 ) -> Result<()> {
     // Create SHM file path
@@ -266,16 +270,55 @@ pub async fn start_plugin_server_with_shutdown(
         tracing::debug!("Pushed filter to plugin: {}", filter_str);
     }
 
-    // Start TCP listener for browser connections
-    let listener = TcpListener::bind(bind_addr).await?;
-    tracing::info!("Listening for browser connections on {}", bind_addr);
+    // Start TCP listeners for browser connections - one per IP
+    // This ensures we only bind to the specific interfaces requested
+    let mut listeners = Vec::new();
+    for ip in &bind_ips {
+        let addr = std::net::SocketAddr::new(std::net::IpAddr::V4(*ip), port);
+        match TcpListener::bind(addr).await {
+            Ok(listener) => {
+                tracing::info!("Listening on {}", addr);
+                listeners.push(listener);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to bind to {}: {}", addr, e);
+            }
+        }
+    }
+
+    if listeners.is_empty() {
+        return Err(color_eyre::eyre::eyre!("Failed to bind to any addresses"));
+    }
+
+    // Create a channel to receive accepted connections from all listeners
+    let (accept_tx, mut accept_rx) = tokio::sync::mpsc::channel::<(TcpStream, std::net::SocketAddr)>(32);
+
+    // Spawn accept tasks for each listener
+    for listener in listeners {
+        let tx = accept_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((stream, addr)) => {
+                        if tx.send((stream, addr)).await.is_err() {
+                            break; // Channel closed, stop accepting
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Accept error: {:?}", e);
+                    }
+                }
+            }
+        });
+    }
+    drop(accept_tx); // Drop our copy so channel closes when all accept tasks are done
 
     // Accept browser connections and tunnel them to the plugin
     loop {
         tokio::select! {
-            accept_result = listener.accept() => {
+            accept_result = accept_rx.recv() => {
                 match accept_result {
-                    Ok((stream, addr)) => {
+                    Some((stream, addr)) => {
                         tracing::debug!("Accepted browser connection from {}", addr);
                         let session = rpc_session.clone();
                         tokio::spawn(async move {
@@ -286,8 +329,10 @@ pub async fn start_plugin_server_with_shutdown(
                             }
                         });
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to accept connection: {:?}", e);
+                    None => {
+                        // All listeners closed
+                        tracing::info!("All listeners closed");
+                        break;
                     }
                 }
             }
@@ -326,9 +371,10 @@ pub async fn start_plugin_server_with_shutdown(
 pub async fn start_plugin_server(
     server: Arc<SiteServer>,
     plugin_path: PathBuf,
-    bind_addr: std::net::SocketAddr,
+    bind_ips: Vec<std::net::Ipv4Addr>,
+    port: u16,
 ) -> Result<()> {
-    start_plugin_server_with_shutdown(server, plugin_path, bind_addr, None).await
+    start_plugin_server_with_shutdown(server, plugin_path, bind_ips, port, None).await
 }
 
 /// Handle a browser TCP connection by tunneling it through the plugin

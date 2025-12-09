@@ -2119,13 +2119,17 @@ async fn serve_plain(
 
     // Find and start the plugin server
     let plugin_path = plugin_server::find_plugin_path()?;
+    // Parse the address to get the IP to bind to
+    let bind_ip: std::net::Ipv4Addr = match address.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip,
+        Ok(std::net::IpAddr::V6(_)) => std::net::Ipv4Addr::LOCALHOST, // Fallback for IPv6
+        Err(_) => std::net::Ipv4Addr::LOCALHOST,
+    };
     plugin_server::start_plugin_server(
         server,
         plugin_path,
-        std::net::SocketAddr::new(
-            address.parse().unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
-            actual_port,
-        ),
+        vec![bind_ip],
+        actual_port,
     )
     .await?;
 
@@ -2512,18 +2516,6 @@ async fn serve_with_tui(
             let ips = get_bind_ips(mode);
             let actual_port = preferred_port.unwrap_or(4000);
 
-            // Determine bind address based on mode
-            let bind_addr = match mode {
-                tui::BindMode::Local => std::net::SocketAddr::new(
-                    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-                    actual_port,
-                ),
-                tui::BindMode::Lan => std::net::SocketAddr::new(
-                    std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-                    actual_port,
-                ),
-            };
-
             // Print machine-readable port for tests
             println!("LISTENING_PORT={actual_port}");
 
@@ -2562,10 +2554,12 @@ async fn serve_with_tui(
                 let _ = event_tx.send(LogEvent::server(format!("  → {ip}:{actual_port}")));
             }
 
+            // Pass the specific IPs to bind to - no more 0.0.0.0!
             if let Err(e) = plugin_server::start_plugin_server_with_shutdown(
                 server,
                 plugin_path,
-                bind_addr,
+                ips,
+                actual_port,
                 Some(shutdown_rx),
             )
             .await
