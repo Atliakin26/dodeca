@@ -93,6 +93,7 @@ fn parse_args() -> Result<Args> {
 }
 
 /// Create a combined dispatcher for the syntax highlight service.
+#[allow(clippy::type_complexity)]
 fn create_dispatcher(
     syntax_highlight_impl: syntax_highlight::SyntaxHighlightImpl,
 ) -> impl Fn(

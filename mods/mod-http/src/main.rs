@@ -268,10 +268,11 @@ fn build_router(ctx: Arc<PluginContext>) -> axum::Router {
                 .header(header::CONTENT_TYPE, mime)
                 .body(Body::from(content))
                 .unwrap(),
-            ServeContent::NotFound { similar_routes: _ } => Response::builder()
+            ServeContent::NotFound { html } => Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-                .body(Body::from("Not Found"))
+                .header(header::CACHE_CONTROL, CACHE_NO_CACHE)
+                .body(Body::from(html))
                 .unwrap(),
         }
     }

@@ -187,7 +187,11 @@ fn navigate_value(value: &facet_value::Value, path: &[String]) -> Option<facet_v
 }
 
 /// Message types for livereload WebSocket
+///
+/// These variants are serialized and sent over WebSocket to the browser,
+/// so the fields are read during serialization even though Rust doesn't see direct reads.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum LiveReloadMsg {
     /// Full page reload (fallback)
     Reload,
@@ -328,11 +332,6 @@ impl SiteServer {
     /// Update cached code execution results
     pub fn set_code_execution_results(&self, results: Vec<crate::db::CodeExecutionResult>) {
         *self.code_execution_results.write().unwrap() = results;
-    }
-
-    /// Get current error for a route (if any)
-    pub fn get_error(&self, route: &str) -> Option<dodeca_protocol::ErrorInfo> {
-        self.current_errors.read().unwrap().get(route).cloned()
     }
 
     /// Check if a path is configured as a stable asset
@@ -1185,11 +1184,10 @@ impl SiteServer {
                 mime: mime.to_string(),
             },
             None => {
-                // 404 with similar routes
+                // 404 with similar routes - render the page on the host side
                 let similar = self.find_similar_routes(path);
-                RpcServeContent::NotFound {
-                    similar_routes: similar,
-                }
+                let html = crate::error_pages::render_404_page(path, &similar);
+                RpcServeContent::NotFound { html }
             }
         }
     }

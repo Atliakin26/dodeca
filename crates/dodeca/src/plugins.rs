@@ -1194,8 +1194,3 @@ pub fn highlight_code_rapace(code: &str, language: &str) -> Option<HighlightResu
 fn syntax_highlight_client() -> Option<Arc<SyntaxHighlightServiceClient<ShmTransport>>> {
     plugins().syntax_highlight.clone()
 }
-
-/// Initialize the rapace syntax highlight service
-pub fn init_syntax_highlight_service() {
-    let _ = syntax_highlight_client();
-}

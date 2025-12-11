@@ -17,7 +17,7 @@ use futures::stream::{self, StreamExt};
 use rapace::transport::shm::{ShmSession, ShmSessionConfig, ShmTransport};
 use rapace::{Frame, RpcError, RpcSession};
 use rapace_tracing::{
-    EventMeta, Field, SpanMeta, TracingConfig, TracingConfigClient, TracingSink, TracingSinkServer,
+    EventMeta, Field, SpanMeta, TracingConfigClient, TracingSink, TracingSinkServer,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -44,29 +44,6 @@ const SHM_CONFIG: ShmSessionConfig = ShmSessionConfig {
 
 /// Buffer size for TCP reads
 const CHUNK_SIZE: usize = 4096;
-
-/// Create a dispatcher for ContentService.
-///
-/// This is used to integrate the content service with RpcSession's dispatcher.
-pub fn create_content_service_dispatcher(
-    service: Arc<HostContentService>,
-) -> impl Fn(
-    u32,
-    u32,
-    Vec<u8>,
-) -> Pin<Box<dyn std::future::Future<Output = Result<Frame, RpcError>> + Send>>
-+ Send
-+ Sync
-+ 'static {
-    move |_channel_id, method_id, payload| {
-        let service = service.clone();
-        Box::pin(async move {
-            // Clone the inner service to create the server
-            let server = ContentServiceServer::new((*service).clone());
-            server.dispatch(method_id, &payload).await
-        })
-    }
-}
 
 // ============================================================================
 // Forwarding TracingSink - re-emits plugin tracing events to host's tracing

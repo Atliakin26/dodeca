@@ -232,11 +232,6 @@ impl FilterHandle {
             _ => TuiLogLevel::Info, // fallback
         }
     }
-
-    /// Check if a tracing level should be shown given current filter settings
-    pub fn should_show(&self, level: Level) -> bool {
-        self.get_log_level().should_show(level)
-    }
 }
 
 /// Visitor to extract the message field from an event

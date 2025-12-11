@@ -62,10 +62,8 @@ pub enum ServeContent {
     StaticNoCache { content: Vec<u8>, mime: String },
     /// Search index file (pagefind)
     Search { content: Vec<u8>, mime: String },
-    /// Not found - includes similar routes for suggestions
-    NotFound {
-        similar_routes: Vec<(String, String)>,
-    },
+    /// Not found - rendered 404 HTML page
+    NotFound { html: String },
 }
 
 /// Content service provided by the host
