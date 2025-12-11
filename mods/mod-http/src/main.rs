@@ -23,12 +23,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use color_eyre::Result;
-use rapace::{Frame, RpcError};
-use rapace_testkit::RpcSession;
-use rapace_tracing::{
-    RapaceTracingLayer, TracingConfigImpl, TracingConfigServer, create_tracing_config_dispatcher,
-};
-use rapace_transport_shm::{ShmSession, ShmSessionConfig, ShmTransport};
+use rapace::transport::shm::{ShmSession, ShmSessionConfig, ShmTransport};
+use rapace::{Frame, RpcError, RpcSession};
+use rapace_tracing::{RapaceTracingLayer, TracingConfigImpl, TracingConfigServer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 

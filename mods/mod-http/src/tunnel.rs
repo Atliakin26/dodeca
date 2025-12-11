@@ -6,8 +6,7 @@
 
 use std::sync::Arc;
 
-use rapace_core::Transport;
-use rapace_testkit::RpcSession;
+use rapace::{RpcSession, Transport};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 

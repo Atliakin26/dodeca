@@ -21,7 +21,7 @@ rapace-transport-shm = "0.1.1"
 rapace-tracing = "0.1.1"
 
 # Syntax highlighting with tree-sitter
-arborium = { version = "0.700", features = [
+arborium = { version = "1.1", features = [
     "lang-bash",
     "lang-c",
     "lang-cpp",

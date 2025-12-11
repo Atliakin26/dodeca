@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
-use dodeca_syntax_highlight_protocol::{HighlightResult, SyntaxHighlightService};
+use mod_arborium_proto::{HighlightResult, SyntaxHighlightService};
 
 /// Syntax highlighting implementation
+#[derive(Clone)]
 pub struct SyntaxHighlightImpl;
 
 impl SyntaxHighlightService for SyntaxHighlightImpl {

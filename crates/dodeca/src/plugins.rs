@@ -3,13 +3,13 @@
 //! Plugins are loaded from dynamic libraries (.so on Linux, .dylib on macOS).
 //! Currently supports image encoding/decoding plugins (WebP, JXL).
 
-use dodeca_syntax_highlight_protocol::{HighlightResult, SyntaxHighlightServiceClient};
 use facet::Facet;
+use mod_arborium_proto::{HighlightResult, SyntaxHighlightServiceClient};
 use plugcard::{
     HostCallData, HostCallResult, LoadError, LogLevel, PlugResult, Plugin, host_services,
 };
-use rapace_testkit::RpcSession;
-use rapace_transport_shm::{ShmSession, ShmSessionConfig, ShmTransport};
+use rapace::RpcSession;
+use rapace::transport::shm::{ShmSession, ShmSessionConfig, ShmTransport};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -156,7 +156,7 @@ pub struct PluginRegistry {
     /// HTML diff plugin for livereload
     pub html_diff: Option<Plugin>,
     /// Syntax highlighting plugin (rapace)
-    pub syntax_highlight: Option<Arc<SyntaxHighlightServiceClient<rapace_transport_shm::ShmTransport>>>,
+    pub syntax_highlight: Option<Arc<SyntaxHighlightServiceClient<ShmTransport>>>,
 }
 
 impl PluginRegistry {
@@ -199,7 +199,7 @@ impl PluginRegistry {
     fn try_load_rapace_service(
         dir: &Path,
         name: &str,
-    ) -> Option<Arc<SyntaxHighlightServiceClient<rapace_transport_shm::ShmTransport>>> {
+    ) -> Option<Arc<SyntaxHighlightServiceClient<ShmTransport>>> {
         #[cfg(target_os = "windows")]
         let executable = format!("{name}.exe");
         #[cfg(not(target_os = "windows"))]
@@ -242,8 +242,7 @@ impl PluginRegistry {
 
         let transport = Arc::new(ShmTransport::new(session));
         let rpc_session = Arc::new(RpcSession::with_channel_start(transport, 1));
-        let client =
-            Arc::new(SyntaxHighlightServiceClient::new(rpc_session.clone()));
+        let client = Arc::new(SyntaxHighlightServiceClient::new(rpc_session.clone()));
 
         {
             let session_runner = rpc_session.clone();
@@ -1192,7 +1191,7 @@ pub fn highlight_code_rapace(code: &str, language: &str) -> Option<HighlightResu
 }
 
 /// Get the syntax highlight service client, if available
-fn syntax_highlight_client() -> Option<Arc<SyntaxHighlightServiceClient<rapace_transport_shm::ShmTransport>>> {
+fn syntax_highlight_client() -> Option<Arc<SyntaxHighlightServiceClient<ShmTransport>>> {
     plugins().syntax_highlight.clone()
 }
 

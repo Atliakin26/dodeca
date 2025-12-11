@@ -5,33 +5,20 @@
 
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use color_eyre::Result;
-use rapace::{Frame, RpcError};
-use rapace_testkit::RpcSession;
-use rapace_transport_shm::{ShmSession, ShmSessionConfig, ShmTransport};
+use rapace::transport::shm::{ShmSession, ShmSessionConfig, ShmTransport};
+use rapace::{Frame, RpcError, RpcSession};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use dodeca_syntax_highlight_protocol::{HighlightResult, SyntaxHighlightService};
+use mod_arborium_proto::SyntaxHighlightServiceServer;
 
 mod syntax_highlight;
 
 /// Type alias for our transport (SHM-based for zero-copy)
 type PluginTransport = ShmTransport;
-
-/// Plugin context shared across handlers
-pub struct PluginContext {
-    /// RPC session for bidirectional communication with host
-    pub session: Arc<RpcSession<PluginTransport>>,
-}
-
-impl PluginContext {
-    /// Create a SyntaxHighlightService server for handling RPC calls
-    pub fn syntax_highlight_server(&self) -> SyntaxHighlightServer<PluginTransport> {
-        SyntaxHighlightServer::new(syntax_highlight::SyntaxHighlightImpl)
-    }
-}
 
 /// SHM configuration - must match host's config
 const SHM_CONFIG: ShmSessionConfig = ShmSessionConfig {
@@ -59,25 +46,31 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Create SHM session
-    let session = ShmSession::new(&args.shm_path, SHM_CONFIG).await?;
+    // Wait for host to create SHM file
+    while !args.shm_path.exists() {
+        tracing::debug!("Waiting for SHM file: {}", args.shm_path.display());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 
-    // Create RPC session
-    let session = RpcSession::new(session);
+    // Open the SHM session (plugin side)
+    let shm_session = ShmSession::open_file(&args.shm_path, SHM_CONFIG)
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to open SHM: {:?}", e))?;
 
-    // Create plugin context
-    let context = PluginContext {
-        session: Arc::new(session),
-    };
+    // Create SHM transport
+    let transport: Arc<PluginTransport> = Arc::new(ShmTransport::new(shm_session));
 
-    // Create syntax highlight server
-    let syntax_highlight_server = context.syntax_highlight_server();
+    // Plugin uses even channel IDs (2, 4, 6, ...)
+    // Host uses odd channel IDs (1, 3, 5, ...)
+    let session = Arc::new(RpcSession::with_channel_start(transport, 2));
 
-    // Create combined dispatcher
-    let dispatcher = create_dispatcher(syntax_highlight_server);
+    tracing::info!("Connected to host via SHM");
 
-    // Run the RPC server
-    context.session.run(dispatcher).await?;
+    // Create combined dispatcher and set it on the session
+    let dispatcher = create_dispatcher(syntax_highlight::SyntaxHighlightImpl);
+    session.set_dispatcher(dispatcher);
+
+    // Run the RPC session demux loop
+    session.run().await?;
 
     Ok(())
 }
@@ -101,7 +94,7 @@ fn parse_args() -> Result<Args> {
 
 /// Create a combined dispatcher for the syntax highlight service.
 fn create_dispatcher(
-    syntax_highlight_server: SyntaxHighlightServer<PluginTransport>,
+    syntax_highlight_impl: syntax_highlight::SyntaxHighlightImpl,
 ) -> impl Fn(
     u32,
     u32,
@@ -111,7 +104,10 @@ fn create_dispatcher(
 + Sync
 + 'static {
     move |_channel_id, method_id, payload| {
-        let syntax_highlight_server = syntax_highlight_server.clone();
-        Box::pin(async move { syntax_highlight_server.dispatch(method_id, &payload).await })
+        let syntax_highlight_impl = syntax_highlight_impl.clone();
+        Box::pin(async move {
+            let server = SyntaxHighlightServiceServer::new(syntax_highlight_impl);
+            server.dispatch(method_id, &payload).await
+        })
     }
 }

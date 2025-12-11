@@ -14,20 +14,18 @@ use std::sync::Arc;
 
 use color_eyre::Result;
 use futures::stream::{self, StreamExt};
-use rapace::{Frame, RpcError};
-use rapace_testkit::RpcSession;
+use rapace::transport::shm::{ShmSession, ShmSessionConfig, ShmTransport};
+use rapace::{Frame, RpcError, RpcSession};
 use rapace_tracing::{
-    EventMeta, Field, SpanMeta, TracingConfig, TracingConfigClient, TracingSink,
-    TracingSinkServer,
+    EventMeta, Field, SpanMeta, TracingConfig, TracingConfigClient, TracingSink, TracingSinkServer,
 };
-use rapace_transport_shm::{ShmSession, ShmSessionConfig, ShmTransport};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
 use tokio::sync::watch;
 use tokio_stream::wrappers::TcpListenerStream;
 
-use dodeca_serve_protocol::{ContentServiceServer, TcpTunnelClient};
+use mod_http_proto::{ContentServiceServer, TcpTunnelClient};
 
 use crate::content_service::HostContentService;
 use crate::serve::SiteServer;

@@ -1162,8 +1162,8 @@ impl SiteServer {
     /// Find content for RPC serving (returns protocol ServeContent type)
     ///
     /// This wraps find_content and converts the result to the protocol's ServeContent.
-    pub fn find_content_for_rpc(&self, path: &str) -> dodeca_serve_protocol::ServeContent {
-        use dodeca_serve_protocol::ServeContent as RpcServeContent;
+    pub fn find_content_for_rpc(&self, path: &str) -> mod_http_proto::ServeContent {
+        use mod_http_proto::ServeContent as RpcServeContent;
 
         match self.find_content(path) {
             Some(ServeContent::Html(html)) => {
