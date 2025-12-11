@@ -7,6 +7,9 @@ description = "Syntax highlighting plugin for dodeca using rapace"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[package.metadata.docs.rs]
+rustdoc-args = ["--html-in-header", "arborium-header.html"]
+
 [[bin]]
 name = "dodeca-mod-arborium"
 path = "src/main.rs"

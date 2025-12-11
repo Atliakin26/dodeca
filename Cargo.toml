@@ -1,10 +1,8 @@
 [workspace]
 members = [
     "crates/*",
+    "mods/*",
     "xtask",
-]
-exclude = [
-    "mods/*"
 ]
 resolver = "3"
 

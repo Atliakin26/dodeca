@@ -26,14 +26,13 @@ use color_eyre::Result;
 use rapace::{Frame, RpcError};
 use rapace_testkit::RpcSession;
 use rapace_tracing::{
-    create_tracing_config_dispatcher, RapaceTracingLayer, TracingConfigImpl,
-    TracingConfigServer,
+    RapaceTracingLayer, TracingConfigImpl, TracingConfigServer, create_tracing_config_dispatcher,
 };
 use rapace_transport_shm::{ShmSession, ShmSessionConfig, ShmTransport};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use dodeca_serve_protocol::{ContentServiceClient, TcpTunnelServer, WebSocketTunnelClient};
+use mod_http_proto::{ContentServiceClient, TcpTunnelServer, WebSocketTunnelClient};
 
 mod devtools;
 mod tunnel;
@@ -218,7 +217,7 @@ fn build_router(ctx: Arc<PluginContext>) -> axum::Router {
     };
     use std::time::Instant;
 
-    use dodeca_serve_protocol::ServeContent;
+    use mod_http_proto::ServeContent;
 
     /// Cache control headers
     const CACHE_IMMUTABLE: &str = "public, max-age=31536000, immutable";

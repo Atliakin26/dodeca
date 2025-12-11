@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
 
+[package.metadata.docs.rs]
+rustdoc-args = ["--html-in-header", "arborium-header.html"]
+
 [[bin]]
 name = "dodeca-mod-http"
 path = "src/main.rs"
@@ -22,10 +25,10 @@ rapace-core = "0.1.1"
 rapace-testkit = "0.1.1"
 rapace-registry = "0.1.1"
 rapace-transport-shm = "0.1.1"
-dodeca-serve-protocol = { path = "../dodeca-serve-protocol" }
+mod-http-proto = { path = "../mod-http-proto" }
 
 # Devtools protocol (for WebSocket messages)
-dodeca-protocol = { path = "../dodeca-protocol" }
+dodeca-protocol = { path = "../../crates/dodeca-protocol" }
 
 # Serialization
 facet = "0.32.2"

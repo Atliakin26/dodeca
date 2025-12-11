@@ -11,7 +11,7 @@ use rapace_testkit::RpcSession;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use dodeca_serve_protocol::{TcpTunnel, TunnelHandle};
+use mod_http_proto::{TcpTunnel, TunnelHandle};
 
 /// Default buffer size for reads (4KB chunks).
 pub const CHUNK_SIZE: usize = 4096;
