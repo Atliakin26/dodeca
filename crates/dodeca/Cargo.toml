@@ -72,7 +72,7 @@ open = "5"
 if-addrs = "0.14"
 
 # Incremental computation
-picante = { git = "https://github.com/bearcove/picante" }
+picante = { git = "https://github.com/bearcove/picante", branch = "feat/type-erasure-compile-time" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

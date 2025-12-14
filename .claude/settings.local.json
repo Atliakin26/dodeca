@@ -1,7 +1,8 @@
 {
   "permissions": {
     "additionalDirectories": [
-      "/Users/amos/bearcove/"
+      "/Users/amos/bearcove/",
+      "/home/amos/bearcove/"
     ]
   }
 }

@@ -3,6 +3,11 @@ name = "dodeca-debug"
 version = "0.1.0"
 edition = "2024"
 
+[package.metadata]
+
+[package.metadata."docs.rs"]
+rustdoc-args = ["--html-in-header", "arborium-header.html"]
+
 [dependencies]
 backtrace = "0.3"
 libc = "0.2"

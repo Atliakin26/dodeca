@@ -3,7 +3,9 @@
 /docs/public/
 .cache/
 bloaty_report*
+*.mm_profdata
 
+llvm-lines*
 perf-*.data
 *.zst
 *.log
