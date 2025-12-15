@@ -23,6 +23,8 @@ use cell_http_proto::TcpTunnelClient;
 use cell_image_proto::{ImageProcessorClient, ImageResult, ResizeInput, ThumbhashInput};
 use cell_js_proto::{JsProcessorClient, JsResult, JsRewriteInput};
 use cell_jxl_proto::{JXLEncodeInput, JXLProcessorClient, JXLResult};
+use cell_lifecycle_proto::CellLifecycleServer;
+use cell_lifecycle_proto::{CellLifecycle, ReadyAck, ReadyMsg};
 use cell_linkcheck_proto::{LinkCheckInput, LinkCheckResult, LinkCheckerClient, LinkStatus};
 use cell_markdown_proto::{
     FrontmatterResult, MarkdownProcessorClient, MarkdownResult, ParseResult,
@@ -34,6 +36,7 @@ use cell_pagefind_proto::{
 use cell_sass_proto::{SassCompilerClient, SassInput, SassResult};
 use cell_svgo_proto::{SvgoOptimizerClient, SvgoResult};
 use cell_webp_proto::{WebPEncodeInput, WebPProcessorClient, WebPResult};
+use dashmap::DashMap;
 use rapace::transport::shm::{HubConfig, HubHost, HubHostPeerTransport, close_peer_fd};
 use rapace::{Frame, RpcSession};
 use rapace_tracing::{TracingConfigClient, TracingSinkServer};
@@ -42,6 +45,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{Duration, SystemTime};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 /// Global hub host for all plugins.
@@ -61,6 +65,179 @@ pub fn set_quiet_mode(quiet: bool) {
 /// Check if quiet mode is enabled.
 fn is_quiet_mode() -> bool {
     QUIET_MODE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+// ============================================================================
+// Cell Readiness Registry
+// ============================================================================
+
+/// Registry for tracking cell readiness (RPC-ready state).
+///
+/// Cells call the CellLifecycle.ready() RPC after starting their demux loop,
+/// proving they can handle RPC requests.
+#[derive(Clone)]
+pub struct CellReadyRegistry {
+    /// Map of peer_id -> ReadyMsg
+    ready: Arc<DashMap<u16, ReadyMsg>>,
+}
+
+impl CellReadyRegistry {
+    fn new() -> Self {
+        Self {
+            ready: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Mark a peer as ready
+    fn mark_ready(&self, msg: ReadyMsg) {
+        let peer_id = msg.peer_id;
+        self.ready.insert(peer_id, msg);
+    }
+
+    /// Check if a peer is ready
+    pub fn is_ready(&self, peer_id: u16) -> bool {
+        self.ready.contains_key(&peer_id)
+    }
+
+    /// Get the ready message for a peer
+    pub fn get_ready(&self, peer_id: u16) -> Option<ReadyMsg> {
+        self.ready.get(&peer_id).map(|entry| entry.clone())
+    }
+
+    /// Wait for a peer to become ready with timeout
+    /// Uses polling with sleep to work across different tokio runtimes
+    pub async fn wait_for_ready(&self, peer_id: u16, timeout: Duration) -> eyre::Result<ReadyMsg> {
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(msg) = self.get_ready(peer_id) {
+                return Ok(msg);
+            }
+            if start.elapsed() >= timeout {
+                return Err(eyre::eyre!(
+                    "Timeout waiting for peer {} to be ready",
+                    peer_id
+                ));
+            }
+            // Poll every 10ms - works across different runtimes
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Wait for multiple peers to become ready with timeout
+    pub async fn wait_for_all_ready(
+        &self,
+        peer_ids: &[u16],
+        timeout: Duration,
+    ) -> eyre::Result<()> {
+        let start = std::time::Instant::now();
+        for &peer_id in peer_ids {
+            loop {
+                if self.is_ready(peer_id) {
+                    break;
+                }
+                if start.elapsed() >= timeout {
+                    return Err(eyre::eyre!(
+                        "Timeout waiting for peer {} to be ready",
+                        peer_id
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Global cell readiness registry
+static CELL_READY_REGISTRY: OnceLock<CellReadyRegistry> = OnceLock::new();
+
+/// Get or initialize the cell readiness registry
+pub fn cell_ready_registry() -> &'static CellReadyRegistry {
+    CELL_READY_REGISTRY.get_or_init(CellReadyRegistry::new)
+}
+
+/// Wait for a cell to become ready by name with timeout
+///
+/// Returns the ready message if successful, or an error if the cell is not found or timeout occurs.
+pub async fn wait_for_cell_ready(cell_name: &str, timeout: Duration) -> eyre::Result<ReadyMsg> {
+    // Poll for the peer_id to appear (cell might still be spawning)
+    let peer_id = {
+        let start = std::time::Instant::now();
+        loop {
+            if let Ok(info) = PEER_DIAG_INFO.read() {
+                if let Some(peer) = info.iter().find(|i| i.name == cell_name) {
+                    break peer.peer_id;
+                }
+            }
+            if start.elapsed() >= timeout {
+                return Err(eyre::eyre!(
+                    "Cell {} not found after {:?}",
+                    cell_name,
+                    timeout
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+
+    // Wait for the cell to become ready
+    cell_ready_registry().wait_for_ready(peer_id, timeout).await
+}
+
+/// Wait for multiple cells to become ready by name with timeout
+pub async fn wait_for_cells_ready(cell_names: &[&str], timeout: Duration) -> eyre::Result<()> {
+    let mut peer_ids = Vec::new();
+
+    // Look up all peer IDs
+    if let Ok(info) = PEER_DIAG_INFO.read() {
+        for &cell_name in cell_names {
+            let peer_id = info
+                .iter()
+                .find(|i| i.name == cell_name)
+                .map(|i| i.peer_id)
+                .ok_or_else(|| eyre::eyre!("Cell {} not found", cell_name))?;
+            peer_ids.push(peer_id);
+        }
+    } else {
+        return Err(eyre::eyre!("Failed to acquire peer info lock"));
+    }
+
+    // Wait for all cells to become ready
+    cell_ready_registry()
+        .wait_for_all_ready(&peer_ids, timeout)
+        .await
+}
+
+/// Host implementation of CellLifecycle service
+#[derive(Clone)]
+struct HostCellLifecycle {
+    registry: CellReadyRegistry,
+}
+
+impl HostCellLifecycle {
+    fn new(registry: CellReadyRegistry) -> Self {
+        Self { registry }
+    }
+}
+
+impl CellLifecycle for HostCellLifecycle {
+    async fn ready(&self, msg: ReadyMsg) -> ReadyAck {
+        let peer_id = msg.peer_id;
+        let cell_name = msg.cell_name.clone();
+        info!("Cell {} (peer_id={}) is ready", cell_name, peer_id);
+
+        self.registry.mark_ready(msg);
+
+        let host_time_unix_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_millis() as u64);
+
+        ReadyAck {
+            ok: true,
+            host_time_unix_ms,
+        }
+    }
 }
 
 /// Decoded image data returned by plugins
@@ -469,13 +646,23 @@ impl PluginRegistry {
         // Register for SIGUSR1 diagnostics
         register_peer_diag(peer_id, binary_name, transport, rpc_session.clone());
 
-        // Set up tracing sink so plugin logs are forwarded to host tracing
+        // Set up multi-service dispatcher for tracing and cell lifecycle
         let tracing_sink = ForwardingTracingSink::new();
+        let lifecycle_registry = cell_ready_registry().clone();
         rpc_session.set_dispatcher(move |_channel_id, method_id, payload| {
             let tracing_sink = tracing_sink.clone();
+            let lifecycle_registry = lifecycle_registry.clone();
             Box::pin(async move {
-                let server = TracingSinkServer::new(tracing_sink);
-                server.dispatch(method_id, &payload).await
+                // Try TracingSink service first
+                let tracing_server = TracingSinkServer::new(tracing_sink);
+                if let Ok(frame) = tracing_server.dispatch(method_id, &payload).await {
+                    return Ok(frame);
+                }
+
+                // Try CellLifecycle service
+                let lifecycle_impl = HostCellLifecycle::new(lifecycle_registry);
+                let lifecycle_server = CellLifecycleServer::new(lifecycle_impl);
+                lifecycle_server.dispatch(method_id, &payload).await
             })
         });
 

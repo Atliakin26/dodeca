@@ -13,9 +13,7 @@ use eyre::Result;
 use futures::stream::{self, StreamExt};
 use rapace::transport::shm::HubHostPeerTransport;
 use rapace::{Frame, RpcError, RpcSession};
-use rapace_tracing::{
-    EventMeta, Field, SpanMeta, TracingSink,
-};
+use rapace_tracing::{EventMeta, Field, SpanMeta, TracingSink};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
@@ -135,9 +133,9 @@ fn create_content_dispatcher(
     u32,
     Vec<u8>,
 ) -> Pin<Box<dyn std::future::Future<Output = Result<Frame, RpcError>> + Send>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |_channel_id, method_id, payload| {
         let content_service = content_service.clone();
         Box::pin(async move {
@@ -171,7 +169,9 @@ pub async fn start_plugin_server_with_shutdown(
 
     // Check that the http cell is loaded
     if registry.http.is_none() {
-        return Err(eyre::eyre!("HTTP cell not loaded. Build it with: cargo build -p cell-http --bin ddc-cell-http"));
+        return Err(eyre::eyre!(
+            "HTTP cell not loaded. Build it with: cargo build -p cell-http --bin ddc-cell-http"
+        ));
     }
 
     // Get the raw session to set up ContentService dispatcher
@@ -231,6 +231,22 @@ pub async fn start_plugin_server_with_shutdown(
 
         let bound_port =
             actual_port.ok_or_else(|| eyre::eyre!("Could not determine bound port"))?;
+
+        // Wait for required cells to be ready before declaring the server ready
+        // This prevents the race condition where tests/clients connect before cells can handle RPCs
+        let required_cells = ["ddc-cell-http", "ddc-cell-markdown"];
+        let timeout = std::time::Duration::from_secs(5);
+
+        tracing::info!(
+            "Waiting for required cells to be ready: {:?}",
+            required_cells
+        );
+        if let Err(e) = crate::cells::wait_for_cells_ready(&required_cells, timeout).await {
+            tracing::warn!(
+                "Timeout waiting for cells to be ready: {}. Proceeding anyway.",
+                e
+            );
+        }
 
         eprintln!("DEBUG: About to print LISTENING_PORT={}", bound_port);
         println!("LISTENING_PORT={}", bound_port);

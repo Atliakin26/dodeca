@@ -50,6 +50,7 @@ notify = "8"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net", "sync"] }
 futures = "0.3"
+dashmap = "6"
 
 # TUI is now in the mod-tui plugin
 
@@ -95,6 +96,7 @@ cell-html-diff-proto = { path = "../../cells/cell-html-diff-proto" }
 cell-image-proto = { path = "../../cells/cell-image-proto" }
 cell-js-proto = { path = "../../cells/cell-js-proto" }
 cell-jxl-proto = { path = "../../cells/cell-jxl-proto" }
+cell-lifecycle-proto = { path = "../../cells/cell-lifecycle-proto" }
 cell-linkcheck-proto = { path = "../../cells/cell-linkcheck-proto" }
 cell-minify-proto = { path = "../../cells/cell-minify-proto" }
 cell-tui-proto = { path = "../../cells/cell-tui-proto" }

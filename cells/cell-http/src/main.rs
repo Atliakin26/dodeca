@@ -74,6 +74,7 @@ impl ServiceDispatch for TcpTunnelService {
 }
 
 #[tokio::main(flavor = "current_thread")]
+#[allow(clippy::disallowed_methods)] // False positive on run_task.await - we're in async main
 async fn main() -> Result<()> {
     color_eyre::install()?;
 
@@ -113,13 +114,76 @@ async fn main() -> Result<()> {
 
     session.set_dispatcher(dispatcher);
 
-    // Run the RPC session demux loop (this is the main event loop now)
-    tracing::info!("Plugin ready, waiting for tunnel connections");
-    if let Err(e) = session.run().await {
-        tracing::error!(error = ?e, "RPC session error - host connection lost");
+    // Start demux loop in background task
+    let run_task = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            tracing::info!("Starting demux loop");
+            session.run().await
+        })
+    };
+
+    // Yield to let the demux loop start (critical for current_thread runtime)
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
     }
 
-    Ok(())
+    // Perform ready handshake with host
+    {
+        use cell_lifecycle_proto::{CellLifecycleClient, ReadyMsg};
+
+        let client = CellLifecycleClient::new(session.clone());
+        let cell_name = "ddc-cell-http";
+        let pid = std::process::id();
+
+        let msg = ReadyMsg {
+            peer_id: args.peer_id,
+            cell_name: cell_name.to_string(),
+            pid: Some(pid),
+            version: None,
+            features: vec![],
+        };
+
+        // Retry ready handshake with timeout
+        let timeout = std::time::Duration::from_secs(2);
+        let mut delay_ms = 10u64;
+        let start = std::time::Instant::now();
+
+        loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                client.ready(msg.clone()),
+            )
+            .await
+            {
+                Ok(Ok(ack)) => {
+                    tracing::info!(
+                        host_time_ms = ?ack.host_time_unix_ms,
+                        "Ready handshake acknowledged by host"
+                    );
+                    break;
+                }
+                Ok(Err(_)) | Err(_) => {
+                    if start.elapsed() >= timeout {
+                        tracing::warn!("Ready handshake timed out, continuing anyway");
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    delay_ms = (delay_ms * 2).min(200);
+                }
+            }
+        }
+    }
+
+    // Wait for the demux loop to finish
+    tracing::info!("Plugin ready, waiting for tunnel connections");
+    match run_task.await? {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            tracing::error!(error = ?e, "RPC session error - host connection lost");
+            Err(e.into())
+        }
+    }
 }
 
 /// Build the axum router for the internal HTTP server

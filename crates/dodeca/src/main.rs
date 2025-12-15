@@ -2118,6 +2118,27 @@ fn rebuild_search_for_serve(server: &serve::SiteServer) -> Result<search::Search
 
     #[allow(clippy::await_holding_lock)] // Intentional - creating snapshot while holding lock
     rt.block_on(async {
+        // Wait for markdown cell to be ready before building search index
+        // This prevents the race condition where we try to call markdown RPC before cell is ready
+        eprintln!("[SEARCH INDEX] Waiting for markdown cell to be ready...");
+        tracing::info!("Waiting for markdown cell to be ready before building search index");
+        let timeout = std::time::Duration::from_secs(10);
+        match cells::wait_for_cell_ready("ddc-cell-markdown", timeout).await {
+            Ok(_) => {
+                eprintln!("[SEARCH INDEX] Markdown cell is ready!");
+            }
+            Err(e) => {
+                eprintln!(
+                    "[SEARCH INDEX] Timeout waiting for markdown cell: {}. Proceeding anyway.",
+                    e
+                );
+                tracing::warn!(
+                    "Timeout waiting for markdown cell: {}. Proceeding anyway.",
+                    e
+                );
+            }
+        }
+
         // Snapshot pattern: lock, snapshot, release, then query the snapshot
         let snapshot = {
             let db = server.db.lock().map_err(|_| eyre!("db lock poisoned"))?;

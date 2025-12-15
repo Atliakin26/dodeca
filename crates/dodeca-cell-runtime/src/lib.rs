@@ -19,10 +19,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 // Re-export dependencies for macro use
+pub use cell_lifecycle_proto;
 pub use color_eyre;
+pub use dodeca_debug;
 pub use rapace;
 pub use rapace_cell;
-pub use dodeca_debug;
 
 use color_eyre::Result;
 use rapace::RpcSession;
@@ -110,6 +111,98 @@ pub fn add_tracing_service(
     builder.add_service(TracingService(server))
 }
 
+/// Perform ready handshake with the host.
+///
+/// This signals that the cell has started its demux loop and is ready to handle RPC requests.
+async fn ready_handshake(
+    args: &Args,
+    session: Arc<RpcSession<HubPeerTransport>>,
+    cell_name: &str,
+) -> Result<()> {
+    use cell_lifecycle_proto::{CellLifecycleClient, ReadyMsg};
+
+    let client = CellLifecycleClient::new(session);
+
+    // Get process ID
+    let pid = std::process::id();
+
+    // Get timeout from env or use default
+    let timeout_ms = std::env::var("DODECA_CELL_READY_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(2000); // 2 seconds default
+
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+
+    // Build ready message
+    let msg = ReadyMsg {
+        peer_id: args.peer_id,
+        cell_name: cell_name.to_string(),
+        pid: Some(pid),
+        version: None, // Could add git SHA or version here
+        features: vec![],
+    };
+
+    // Retry with backoff
+    let mut delay_ms = 10u64;
+    let start = std::time::Instant::now();
+
+    loop {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            client.ready(msg.clone()),
+        )
+        .await
+        {
+            Ok(Ok(ack)) => {
+                tracing::info!(
+                    cell = %cell_name,
+                    peer_id = args.peer_id,
+                    host_time_ms = ?ack.host_time_unix_ms,
+                    "Ready handshake acknowledged by host"
+                );
+                return Ok(());
+            }
+            Ok(Err(e)) => {
+                // RPC error - might be transport issue
+                if start.elapsed() >= timeout {
+                    return Err(color_eyre::eyre::eyre!(
+                        "Ready handshake timed out after {:?}: {:?}",
+                        timeout,
+                        e
+                    ));
+                }
+                tracing::debug!(
+                    cell = %cell_name,
+                    peer_id = args.peer_id,
+                    error = ?e,
+                    "Ready handshake failed, retrying in {}ms",
+                    delay_ms
+                );
+            }
+            Err(_) => {
+                // Timeout on this attempt
+                if start.elapsed() >= timeout {
+                    return Err(color_eyre::eyre::eyre!(
+                        "Ready handshake timed out after {:?}",
+                        timeout
+                    ));
+                }
+                tracing::debug!(
+                    cell = %cell_name,
+                    peer_id = args.peer_id,
+                    "Ready handshake attempt timed out, retrying in {}ms",
+                    delay_ms
+                );
+            }
+        }
+
+        // Backoff
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        delay_ms = (delay_ms * 2).min(200); // Cap at 200ms
+    }
+}
+
 /// Run a cell service with minimal boilerplate.
 ///
 /// Connects to the host via the shared hub SHM and runs the RPC session.
@@ -124,28 +217,68 @@ where
     // Register SIGUSR1 diagnostic callback
     register_cell_diagnostics(cell_name.clone(), transport.clone());
 
+    eprintln!("[{}] Creating RPC session", cell_name);
     let session = Arc::new(RpcSession::with_channel_start(transport, 2));
 
+    eprintln!("[{}] Initializing tracing", cell_name);
     let CellTracing { tracing_config, .. } = init_tracing(session.clone());
+    eprintln!("[{}] Tracing initialized, connected to host", cell_name);
     tracing::info!(
         cell = %cell_name,
         peer_id = args.peer_id,
         "Connected to host via hub SHM"
     );
 
+    eprintln!("[{}] Building dispatcher", cell_name);
     let dispatcher = DispatcherBuilder::new();
     let dispatcher = add_tracing_service(dispatcher, tracing_config);
     let dispatcher = dispatcher.add_service(service);
     let dispatcher = dispatcher.build();
 
+    eprintln!("[{}] Setting dispatcher", cell_name);
     session.set_dispatcher(dispatcher);
 
-    tracing::info!(cell = %cell_name, peer_id = args.peer_id, "Cell ready, waiting for requests");
-    if let Err(e) = session.run().await {
-        tracing::error!(cell = %cell_name, peer_id = args.peer_id, error = ?e, "RPC session error - host connection lost");
+    // Start demux loop in background task
+    eprintln!("[{}] Spawning demux loop task", cell_name);
+    let run_task = {
+        let session = session.clone();
+        let cell_name_clone = cell_name.clone();
+        let peer_id = args.peer_id;
+        tokio::spawn(async move {
+            eprintln!("[{}] Demux loop task started", cell_name_clone);
+            tracing::info!(cell = %cell_name_clone, peer_id, "Starting demux loop");
+            session.run().await
+        })
+    };
+
+    // Yield to let the demux loop start (critical for current_thread runtime)
+    // Without this, the RPC call below would deadlock waiting for a response
+    // that can never arrive because the demux loop hasn't started yet
+    eprintln!("[{}] Yielding to start demux loop", cell_name);
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    eprintln!("[{}] Yielding complete", cell_name);
+
+    // Perform ready handshake with host
+    eprintln!("[{}] Starting ready handshake", cell_name);
+    if let Err(e) = ready_handshake(&args, session.clone(), &cell_name).await {
+        eprintln!("[{}] Ready handshake failed: {:?}", cell_name, e);
+        tracing::warn!(cell = %cell_name, peer_id = args.peer_id, error = ?e, "Ready handshake failed, continuing anyway");
+    } else {
+        eprintln!("[{}] Ready handshake successful", cell_name);
     }
 
-    Ok(())
+    tracing::info!(cell = %cell_name, peer_id = args.peer_id, "Cell ready, waiting for requests");
+
+    // Wait for the demux loop to finish (it runs forever unless host disconnects)
+    match run_task.await? {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            tracing::error!(cell = %cell_name, peer_id = args.peer_id, error = ?e, "RPC session error - host connection lost");
+            Err(e.into())
+        }
+    }
 }
 
 /// Register cell diagnostics for SIGUSR1.
@@ -156,10 +289,7 @@ fn register_cell_diagnostics(name: String, transport: Arc<HubPeerTransport>) {
         let send_ring = peer.send_ring();
         let doorbell_bytes = transport.doorbell_pending_bytes();
 
-        eprintln!(
-            "\n--- Cell \"{}\" Transport Diagnostics ---",
-            name
-        );
+        eprintln!("\n--- Cell \"{}\" Transport Diagnostics ---", name);
         eprintln!(
             "  peer_id={}: recv_ring({}) send_ring({}) doorbell_pending={}",
             peer.peer_id(),
@@ -201,20 +331,25 @@ pub fn parse_args() -> Result<Args> {
         if let Some(value) = arg.strip_prefix("--hub-path=") {
             hub_path = Some(PathBuf::from(value));
         } else if let Some(value) = arg.strip_prefix("--peer-id=") {
-            peer_id = Some(value.parse::<u16>().map_err(|e| {
-                color_eyre::eyre::eyre!("invalid --peer-id: {}", e)
-            })?);
+            peer_id = Some(
+                value
+                    .parse::<u16>()
+                    .map_err(|e| color_eyre::eyre::eyre!("invalid --peer-id: {}", e))?,
+            );
         } else if let Some(value) = arg.strip_prefix("--doorbell-fd=") {
-            doorbell_fd = Some(value.parse::<RawFd>().map_err(|e| {
-                color_eyre::eyre::eyre!("invalid --doorbell-fd: {}", e)
-            })?);
+            doorbell_fd = Some(
+                value
+                    .parse::<RawFd>()
+                    .map_err(|e| color_eyre::eyre::eyre!("invalid --doorbell-fd: {}", e))?,
+            );
         }
     }
 
     Ok(Args {
         hub_path: hub_path.ok_or_else(|| color_eyre::eyre::eyre!("--hub-path required"))?,
         peer_id: peer_id.ok_or_else(|| color_eyre::eyre::eyre!("--peer-id required"))?,
-        doorbell_fd: doorbell_fd.ok_or_else(|| color_eyre::eyre::eyre!("--doorbell-fd required"))?,
+        doorbell_fd: doorbell_fd
+            .ok_or_else(|| color_eyre::eyre::eyre!("--doorbell-fd required"))?,
     })
 }
 
@@ -224,7 +359,10 @@ pub async fn create_hub_transport(args: &Args) -> Result<Arc<HubPeerTransport>> 
 
     cell_debug!(
         "[{}] create_hub_transport: peer_id={}, doorbell_fd={}, hub_path={}",
-        cell_name, args.peer_id, args.doorbell_fd, args.hub_path.display()
+        cell_name,
+        args.peer_id,
+        args.doorbell_fd,
+        args.hub_path.display()
     );
 
     // Wait for the hub SHM file to exist
@@ -258,7 +396,9 @@ pub async fn create_hub_transport(args: &Args) -> Result<Arc<HubPeerTransport>> 
         }
         cell_debug!(
             "[{}] doorbell_fd {} is valid (flags=0x{:x})",
-            cell_name, args.doorbell_fd, flags
+            cell_name,
+            args.doorbell_fd,
+            flags
         );
     }
 
@@ -278,10 +418,15 @@ pub async fn create_hub_transport(args: &Args) -> Result<Arc<HubPeerTransport>> 
 
     cell_debug!(
         "[{}] created doorbell from fd {}, wrapped in AsyncFd",
-        cell_name, args.doorbell_fd
+        cell_name,
+        args.doorbell_fd
     );
 
-    Ok(Arc::new(HubPeerTransport::new(Arc::new(peer), doorbell, cell_name)))
+    Ok(Arc::new(HubPeerTransport::new(
+        Arc::new(peer),
+        doorbell,
+        cell_name,
+    )))
 }
 
 /// Macro to create a cell service wrapper
@@ -297,8 +442,12 @@ macro_rules! cell_service {
                 payload: &[u8],
             ) -> std::pin::Pin<
                 Box<
-                    dyn std::future::Future<Output = std::result::Result<$crate::rapace::Frame, $crate::rapace::RpcError>>
-                        + Send
+                    dyn std::future::Future<
+                            Output = std::result::Result<
+                                $crate::rapace::Frame,
+                                $crate::rapace::RpcError,
+                            >,
+                        > + Send
                         + 'static,
                 >,
             > {
