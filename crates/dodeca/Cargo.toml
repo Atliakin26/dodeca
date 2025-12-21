@@ -1,6 +1,6 @@
 [package]
 name = "dodeca"
-version = "0.2.13"
+version = "0.6.1"
 edition = "2024"
 rust-version = "1.91"
 authors = ["Amos Wenger <amos@bearcove.eu>"]
