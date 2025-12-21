@@ -169,7 +169,7 @@ pub fn targets_for_platform(platform: CiPlatform) -> Vec<Target> {
             runner: if MACOS_SELF_HOSTED {
                 RunnerSpec::labels(macos_labels)
             } else {
-                RunnerSpec::single("depot-macos-15")
+                RunnerSpec::single("mac-arm64-oakhost")
             },
             lib_ext: "dylib",
             lib_prefix: "lib",
